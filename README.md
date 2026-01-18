@@ -46,7 +46,7 @@
 1. 克隆项目并进入目录：
    ```bash
    git clone <repository-url>
-   cd FolderExplorer
+   cd folder-insight
    ```
 
 2. 安装前端依赖：
