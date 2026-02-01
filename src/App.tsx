@@ -12,7 +12,9 @@ import {
   TreeDeciduous,
   Loader2,
   HardDrive,
-  Files
+  Files,
+  Heart,
+  X
 } from "lucide-react";
 import { 
   PieChart, 
@@ -64,6 +66,34 @@ function App() {
   const [languageMode, setLanguageMode] = useState<LanguageMode>(getInitialLanguageMode());
   const [systemLocale, setSystemLocale] = useState(detectSystemLocale());
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
+  const [isSponsorModalOpen, setIsSponsorModalOpen] = useState(false);
+  const pendingUpdates = useRef<Map<string, SizeUpdate>>(new Map());
+
+  // 赞助弹窗自动弹出逻辑 / Auto-show sponsor modal logic
+  useEffect(() => {
+    const SPONSOR_KEY = 'last_sponsor_show_time';
+    const FIRST_RUN_KEY = 'has_run_before';
+    const SHOW_INTERVAL = 7 * 24 * 60 * 60 * 1000; // 每7天弹出一次 / Show every 7 days
+
+    const now = Date.now();
+    const hasRunBefore = localStorage.getItem(FIRST_RUN_KEY);
+    const lastShowTime = localStorage.getItem(SPONSOR_KEY);
+
+    if (!hasRunBefore) {
+      // 首次安装运行：记录状态，但不弹出
+      // First run: mark as run but don't show
+      localStorage.setItem(FIRST_RUN_KEY, 'true');
+      localStorage.setItem(SPONSOR_KEY, now.toString());
+    } else {
+      // 非首次运行：检查间隔时间
+      // Not first run: check interval
+      const lastTime = lastShowTime ? parseInt(lastShowTime, 10) : 0;
+      if (now - lastTime > SHOW_INTERVAL) {
+        setIsSponsorModalOpen(true);
+        localStorage.setItem(SPONSOR_KEY, now.toString());
+      }
+    }
+  }, []);
 
   const fileListRef = useRef<HTMLDivElement | null>(null);
 
@@ -150,12 +180,22 @@ function App() {
     try {
       setLoading(true);
       setError(null);
+      setData(null); // 清空旧数据，避免事件匹配到错误的树
       setContextMenu(null);
       setExpandedPaths(new Set());
       setLoadingPaths(new Set());
 
       const result = await invoke<FileNode>("analyze_directory", { path });
-      setData(result);
+      
+      // 应用加载期间积累的所有更新
+      // Apply all updates accumulated during loading
+      let updatedResult = result;
+      pendingUpdates.current.forEach((update) => {
+        updatedResult = applySizeUpdate(updatedResult, update);
+      });
+      pendingUpdates.current.clear();
+
+      setData(updatedResult);
       setExpandedPaths(new Set([result.path as string]));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -211,7 +251,18 @@ function App() {
   // 监听后台大小更新事件
   useEffect(() => {
     const unlistenPromise = listen<SizeUpdate>('folder-size-updated', (event) => {
-      setData(prev => (prev ? applySizeUpdate(prev, event.payload) : null));
+      const update = event.payload;
+      const normalizedPath = normalizePathForMatch(update.path);
+      
+      setData(prev => {
+        if (!prev) {
+          // 如果数据还在加载中，先存入待处理队列
+          // If data is loading, store in pending queue
+          pendingUpdates.current.set(normalizedPath, update);
+          return null;
+        }
+        return applySizeUpdate(prev, update);
+      });
     });
 
     return () => {
@@ -288,7 +339,7 @@ function App() {
    * Find a node in the tree by its path.
    */
   const findNodeByPath = (root: FileNode, path: string): FileNode | null => {
-    if (root.path === path) return root;
+    if (normalizePathForMatch(root.path) === normalizePathForMatch(path)) return root;
     if (!root.children) return null;
 
     for (const child of root.children) {
@@ -299,16 +350,22 @@ function App() {
   };
 
   /**
-   * 替换指定路径节点的 children，并尽量避免无意义的全树拷贝。
-   * Replace children at the target path while avoiding unnecessary full-tree cloning.
+   * 替换指定路径节点的 children、size 和 file_count，并尽量避免无意义的全树拷贝。
+   * Replace children, size, and file_count at the target path while avoiding unnecessary full-tree cloning.
    */
-  const replaceChildrenAtPath = (root: FileNode, path: string, children: FileNode[]): FileNode => {
-    if (root.path === path) return { ...root, children };
+  const updateNodeAtPath = (
+    root: FileNode, 
+    path: string, 
+    update: Partial<FileNode>
+  ): FileNode => {
+    if (normalizePathForMatch(root.path) === normalizePathForMatch(path)) {
+      return { ...root, ...update };
+    }
     if (!root.children) return root;
 
     let changed = false;
     const newChildren = root.children.map(child => {
-      const next = replaceChildrenAtPath(child, path, children);
+      const next = updateNodeAtPath(child, path, update);
       if (next !== child) changed = true;
       return next;
     });
@@ -375,12 +432,26 @@ function App() {
         try {
           const result = await invoke<FileNode>("analyze_directory", { path });
 
-          if (result.children) {
-            setData(prev => {
-              if (!prev) return null;
-              return replaceChildrenAtPath(prev, path, result.children!);
+          setData(prev => {
+            if (!prev) return null;
+            
+            // 应用此节点加载期间可能积累的更新
+            // Apply updates that might have accumulated during this node's loading
+            let updatedNode = result;
+            pendingUpdates.current.forEach((update) => {
+              updatedNode = applySizeUpdate(updatedNode, update);
             });
-          }
+            // 注意：这里不清理 pendingUpdates，因为其他路径可能还需要它
+            // Note: Don't clear all pendingUpdates here as other paths might still need them
+            // 只移除当前路径相关的（如果有的话）
+            pendingUpdates.current.delete(normalizePathForMatch(path));
+
+            return updateNodeAtPath(prev, path, {
+              children: updatedNode.children || [],
+              size: updatedNode.size !== null ? updatedNode.size : findNodeByPath(prev, path)?.size || null,
+              file_count: updatedNode.size !== null ? updatedNode.file_count : findNodeByPath(prev, path)?.file_count || 0
+            });
+          });
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           console.error(`Error loading ${path}: ${errMsg}`);
@@ -545,13 +616,30 @@ function App() {
       <header className="sticky top-0 z-10 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md border-b border-gray-200 dark:border-gray-800 p-4 shrink-0">
         <div className="w-full px-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="bg-blue-600 p-2 rounded-lg">
-              <FolderOpen className="text-white" size={24} />
+            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/20">
+              <HardDrive size={24} />
             </div>
-            <h1 className="text-xl font-bold tracking-tight">{t('appTitle')}</h1>
+            <div>
+              <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400">
+                Folder Insight
+              </h1>
+              <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">
+                {t('subtitle')}
+              </p>
+            </div>
           </div>
-          
+
           <div className="flex items-center gap-3">
+            {/* 赞助作者按钮 / Sponsor button */}
+            <button
+              onClick={() => setIsSponsorModalOpen(true)}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-pink-600 dark:text-pink-400 hover:bg-pink-50 dark:hover:bg-pink-900/20 rounded-lg transition-colors border border-pink-200 dark:border-pink-800"
+            >
+              <Heart size={16} className="fill-pink-500" />
+              <span>{t('sponsor')}</span>
+            </button>
+
+            <div className="h-6 w-px bg-gray-200 dark:bg-gray-800 mx-1" />
             {data && (
               <div className="flex bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
                 <button 
@@ -777,6 +865,85 @@ function App() {
           </div>
         )}
       </main>
+
+      {/* 赞助弹窗 / Sponsor Modal */}
+      {isSponsorModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div 
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            onClick={() => setIsSponsorModalOpen(false)}
+          />
+          <div className="relative w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-800 overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-pink-100 dark:bg-pink-900/30 rounded-full flex items-center justify-center text-pink-600 dark:text-pink-400">
+                    <Heart size={20} className="fill-pink-500" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold">{t('sponsorTitle')}</h2>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">{t('sponsorSubtitle')}</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setIsSponsorModalOpen(false)}
+                  className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-4">
+                {/* 国内扫码区域 / Domestic QR Code */}
+                <div className="bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-200 dark:border-gray-700 p-4 flex flex-col items-center">
+                  <div className="w-40 h-40 bg-white p-2 rounded-lg shadow-inner mb-2 flex items-center justify-center overflow-hidden">
+                    <img 
+                      src="/sponsor-qr.png" 
+                      alt="Sponsor QR Code"
+                      className="w-full h-full object-contain"
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none';
+                        e.currentTarget.parentElement!.innerHTML = `
+                          <div class="text-gray-300 text-[10px] italic text-center">
+                            Alipay QR<br/>(sponsor-qr.png)
+                          </div>
+                        `;
+                      }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-400 uppercase tracking-wider font-bold">Alipay</p>
+                </div>
+
+                {/* 海外支付链接区域 / International Payment Link */}
+                <div className="flex flex-col gap-2">
+                  <a
+                    href="https://buymeacoffee.com/johnhelf" 
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-2 w-full py-2 bg-[#FFDD00] hover:bg-[#ffed4a] text-black rounded-xl font-bold text-sm transition-colors"
+                  >
+                    <img src="https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg" alt="BMC" className="w-4 h-4" />
+                    <span>Buy Me a Coffee</span>
+                  </a>
+                  
+                  <p className="text-[10px] text-gray-400 text-center">
+                    {t('sponsorSubtitle')}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6 flex flex-col gap-2">
+                <button
+                  onClick={() => setIsSponsorModalOpen(false)}
+                  className="w-full py-2.5 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-xl font-semibold hover:opacity-90 transition-opacity"
+                >
+                  {t('close')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

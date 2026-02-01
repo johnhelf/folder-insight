@@ -84,14 +84,15 @@ fn compute_dir_size_recursive(
     cache: Arc<Mutex<HashMap<String, (u64, u64)>>>,
     app_handle: AppHandle,
 ) -> (u64, u64) {
+    let normalized_current = normalize_path_string(&path_str);
     {
         let cache_lock = cache.lock().unwrap();
-        if let Some(res) = cache_lock.get(&path_str) {
+        if let Some(res) = cache_lock.get(&normalized_current) {
             return *res;
         }
     }
 
-    let path_obj = Path::new(&path_str);
+    let path_obj = Path::new(&normalized_current);
     let mut total_size = 0;
     let mut total_count = 0;
     let mut subdirs = Vec::new();
@@ -124,10 +125,11 @@ fn compute_dir_size_recursive(
                 Ok(res) => res,
                 Err(_) => {
                     eprintln!("Panic processing subdir: {}", subdir);
+                    let normalized_subdir = normalize_path_string(subdir);
                     let _ = app_handle.emit(
                         "folder-size-updated",
                         SizeUpdate {
-                            path: subdir.clone(),
+                            path: normalized_subdir,
                             size: 0,
                             file_count: 0,
                         },
@@ -145,13 +147,13 @@ fn compute_dir_size_recursive(
 
     {
         let mut cache_lock = cache.lock().unwrap();
-        cache_lock.insert(path_str.clone(), (total_size, total_count));
+        cache_lock.insert(normalized_current.clone(), (total_size, total_count));
     }
 
     let _ = app_handle.emit(
         "folder-size-updated",
         SizeUpdate {
-            path: path_str,
+            path: normalized_current,
             size: total_size,
             file_count: total_count,
         },
@@ -196,6 +198,7 @@ async fn analyze_directory(
     let path_obj = Path::new(&root_path);
     let mut children = Vec::new();
     let mut current_dir_base_size: u64 = 0;
+    let mut has_subdirs = false;
 
     if let Ok(entries) = fs::read_dir(path_obj) {
         for entry in entries.flatten() {
@@ -205,20 +208,17 @@ async fn analyze_directory(
                 Err(_) => continue,
             };
             let is_dir = meta.is_dir();
-            let path_str = entry_path.to_string_lossy().to_string();
+            if is_dir {
+                has_subdirs = true;
+            }
+            let path_str = normalize_path_string(&entry_path.to_string_lossy());
             let file_size = if is_dir { 0 } else { meta.len() };
 
             let mut size = if is_dir { None } else { Some(file_size) };
             let mut file_count = if is_dir { 0 } else { 1 };
 
-            let node_base_size = if is_dir {
-                0
-            } else {
-                current_dir_base_size += file_size;
-                file_size
-            };
-
             if is_dir {
+                // 尝试从缓存获取
                 let cache_hit = {
                     let cache = state.size_cache.lock().unwrap();
                     cache.get(&path_str).cloned()
@@ -227,8 +227,27 @@ async fn analyze_directory(
                 if let Some((cached_size, cached_count)) = cache_hit {
                     size = Some(cached_size);
                     file_count = cached_count;
+                } else {
+                    // 如果缓存没中，快速检查一下是否为空目录
+                    // If not in cache, check if it's an empty directory
+                    if let Ok(mut entries) = fs::read_dir(&entry_path) {
+                        if entries.next().is_none() {
+                            size = Some(0);
+                            file_count = 0;
+                            // 同时也顺手放入缓存
+                            let mut cache = state.size_cache.lock().unwrap();
+                            cache.insert(path_str.clone(), (0, 0));
+                        }
+                    }
                 }
             }
+
+            let node_base_size = if is_dir {
+                0
+            } else {
+                current_dir_base_size += file_size;
+                file_size
+            };
 
             children.push(FileNode {
                 name: entry.file_name().to_string_lossy().to_string(),
@@ -240,6 +259,16 @@ async fn analyze_directory(
                 children: None,
             });
         }
+    }
+
+    // 如果没有子目录，我们可以立即得出当前目录的总大小，无需启动后台任务
+    // If there are no subdirectories, we can immediately determine the total size.
+    if !has_subdirs {
+        let mut cache = state.size_cache.lock().unwrap();
+        cache.insert(
+            root_path.clone(),
+            (current_dir_base_size, children.len() as u64),
+        );
     }
 
     // 目录优先，其次按大小降序（None 视为 0），最后按名称
