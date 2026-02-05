@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// 应用程序状态（全局共享）
@@ -12,8 +11,8 @@ use tauri::{AppHandle, Emitter, Manager};
 struct AppState {
     /// 简单结果缓存：只存储最终计算结果
     /// Simple result cache: stores final results only
-    /// Key: path, Value: (size, file_count)
-    size_cache: Arc<Mutex<HashMap<String, (u64, u64)>>>,
+    /// Key: path, Value: (logical_size, allocated_size, file_count, is_restricted)
+    size_cache: Arc<Mutex<HashMap<String, (u64, u64, u64, bool)>>>,
     /// 进行中的计算集合，用于避免重复启动后台计算
     /// In-progress set to prevent duplicated background computations
     in_progress: Arc<Mutex<HashSet<String>>>,
@@ -23,9 +22,12 @@ struct AppState {
 pub struct FileNode {
     name: String,
     path: String,
-    size: Option<u64>, // None 表示“计算中” / None means "calculating"
-    base_size: u64,    // 当前目录下直接文件大小总和 / Direct files total size
+    size: Option<u64>,
+    allocated_size: Option<u64>,
+    base_size: u64,
+    base_allocated_size: u64,
     is_dir: bool,
+    is_restricted: bool, // 新增：是否受限 / New: whether it's restricted
     file_count: u64,
     children: Option<Vec<FileNode>>,
 }
@@ -34,6 +36,8 @@ pub struct FileNode {
 struct SizeUpdate {
     path: String,
     size: u64,
+    allocated_size: u64,
+    is_restricted: bool,
     file_count: u64,
 }
 
@@ -77,13 +81,46 @@ async fn open_in_explorer(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+fn get_allocated_size(_path: &Path, logical_size: u64) -> u64 {
+    // Windows 上 meta.len() 通常就是逻辑大小。
+    // 实际占用空间（Allocated Size）通常按簇（Cluster）对齐。
+    // 为了精确，我们可以使用 GetCompressedFileSizeW 处理压缩文件。
+    // 但作为通用方案，按 4KB 簇对齐是一个合理的估算。
+    const CLUSTER_SIZE: u64 = 4096;
+    if logical_size == 0 {
+        return 0;
+    }
+    ((logical_size + CLUSTER_SIZE - 1) / CLUSTER_SIZE) * CLUSTER_SIZE
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_allocated_size(path: &Path, logical_size: u64) -> u64 {
+    // Unix 系系统通常支持获取 blocks
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(meta) = fs::symlink_metadata(path) {
+            return meta.blocks() * 512;
+        }
+    }
+    logical_size
+}
+
 /// 递归计算目录大小（并行版），并通过事件实时回传结果
 /// Recursively compute directory size in parallel and emit realtime updates via events.
 fn compute_dir_size_recursive(
     path_str: String,
-    cache: Arc<Mutex<HashMap<String, (u64, u64)>>>,
+    cache: Arc<Mutex<HashMap<String, (u64, u64, u64, bool)>>>,
     app_handle: AppHandle,
-) -> (u64, u64) {
+    depth: usize,
+) -> (u64, u64, u64, bool) {
+    // 限制递归深度，防止极深目录导致栈溢出
+    // Limit recursion depth to prevent stack overflow in extremely deep directories
+    if depth > 500 {
+        return (0, 0, 0, true);
+    }
+
     let normalized_current = normalize_path_string(&path_str);
     {
         let cache_lock = cache.lock().unwrap();
@@ -94,60 +131,64 @@ fn compute_dir_size_recursive(
 
     let path_obj = Path::new(&normalized_current);
     let mut total_size = 0;
+    let mut total_allocated = 0;
     let mut total_count = 0;
     let mut subdirs = Vec::new();
+    let mut is_restricted = false;
 
-    if let Ok(entries) = fs::read_dir(path_obj) {
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-            let meta = match fs::symlink_metadata(&entry_path) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
+    match fs::read_dir(path_obj) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                let meta = match fs::symlink_metadata(&entry_path) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
 
-            if meta.is_dir() {
-                subdirs.push(entry_path.to_string_lossy().to_string());
-            } else {
-                total_size += meta.len();
-                total_count += 1;
+                if meta.is_dir() {
+                    subdirs.push(entry_path.to_string_lossy().to_string());
+                } else {
+                    let size = meta.len();
+                    total_size += size;
+                    total_allocated += get_allocated_size(&entry_path, size);
+                    total_count += 1;
+                }
             }
+        }
+        Err(_) => {
+            is_restricted = true;
         }
     }
 
-    let results: Vec<(u64, u64)> = subdirs
+    let results: Vec<(u64, u64, u64, bool)> = subdirs
         .par_iter()
         .map(|subdir| {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                compute_dir_size_recursive(subdir.clone(), cache.clone(), app_handle.clone())
+                compute_dir_size_recursive(subdir.clone(), cache.clone(), app_handle.clone(), depth + 1)
             }));
 
             match result {
                 Ok(res) => res,
                 Err(_) => {
                     eprintln!("Panic processing subdir: {}", subdir);
-                    let normalized_subdir = normalize_path_string(subdir);
-                    let _ = app_handle.emit(
-                        "folder-size-updated",
-                        SizeUpdate {
-                            path: normalized_subdir,
-                            size: 0,
-                            file_count: 0,
-                        },
-                    );
-                    (0, 0)
+                    (0, 0, 0, true)
                 }
             }
         })
         .collect();
 
-    for (s, c) in results {
+    for (s, a, c, r) in results {
         total_size += s;
+        total_allocated += a;
         total_count += c;
+        if r {
+            is_restricted = true;
+        }
     }
 
     {
         let mut cache_lock = cache.lock().unwrap();
-        cache_lock.insert(normalized_current.clone(), (total_size, total_count));
+        cache_lock.insert(normalized_current.clone(), (total_size, total_allocated, total_count, is_restricted));
     }
 
     let _ = app_handle.emit(
@@ -155,18 +196,20 @@ fn compute_dir_size_recursive(
         SizeUpdate {
             path: normalized_current,
             size: total_size,
+            allocated_size: total_allocated,
+            is_restricted,
             file_count: total_count,
         },
     );
 
-    (total_size, total_count)
+    (total_size, total_allocated, total_count, is_restricted)
 }
 
 /// 判断是否需要启动后台计算，并在需要时标记为 in-progress
 /// Decide whether to start a background computation and mark it as in-progress when needed.
 fn try_mark_in_progress(
     normalized_path: &str,
-    cache: &Arc<Mutex<HashMap<String, (u64, u64)>>>,
+    cache: &Arc<Mutex<HashMap<String, (u64, u64, u64, bool)>>>,
     in_progress: &Arc<Mutex<HashSet<String>>>,
 ) -> bool {
     let cache_hit = {
@@ -198,64 +241,54 @@ async fn analyze_directory(
     let path_obj = Path::new(&root_path);
     let mut children = Vec::new();
     let mut current_dir_base_size: u64 = 0;
+    let mut current_dir_base_allocated_size: u64 = 0;
     let mut has_subdirs = false;
 
+    let mut current_dir_file_count = 0;
     if let Ok(entries) = fs::read_dir(path_obj) {
         for entry in entries.flatten() {
             let entry_path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
             let meta = match fs::symlink_metadata(&entry_path) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
+
             let is_dir = meta.is_dir();
             if is_dir {
                 has_subdirs = true;
             }
-            let path_str = normalize_path_string(&entry_path.to_string_lossy());
-            let file_size = if is_dir { 0 } else { meta.len() };
+            let normalized_child = normalize_path_string(&entry_path.to_string_lossy());
 
-            let mut size = if is_dir { None } else { Some(file_size) };
-            let mut file_count = if is_dir { 0 } else { 1 };
-
-            if is_dir {
-                // 尝试从缓存获取
-                let cache_hit = {
-                    let cache = state.size_cache.lock().unwrap();
-                    cache.get(&path_str).cloned()
-                };
-
-                if let Some((cached_size, cached_count)) = cache_hit {
-                    size = Some(cached_size);
-                    file_count = cached_count;
+            let (size, allocated_size, count, is_restricted) = if is_dir {
+                let cache_lock = state.size_cache.lock().unwrap();
+                if let Some(res) = cache_lock.get(&normalized_child) {
+                    (Some(res.0), Some(res.1), res.2, res.3)
                 } else {
-                    // 如果缓存没中，快速检查一下是否为空目录
-                    // If not in cache, check if it's an empty directory
-                    if let Ok(mut entries) = fs::read_dir(&entry_path) {
-                        if entries.next().is_none() {
-                            size = Some(0);
-                            file_count = 0;
-                            // 同时也顺手放入缓存
-                            let mut cache = state.size_cache.lock().unwrap();
-                            cache.insert(path_str.clone(), (0, 0));
-                        }
-                    }
+                    (None, None, 0, false)
                 }
-            }
-
-            let node_base_size = if is_dir {
-                0
             } else {
-                current_dir_base_size += file_size;
-                file_size
+                let s = meta.len();
+                let a = get_allocated_size(&entry_path, s);
+                (Some(s), Some(a), 1, false)
             };
 
+            if !is_dir {
+                current_dir_base_size += size.unwrap_or(0);
+                current_dir_base_allocated_size += allocated_size.unwrap_or(0);
+                current_dir_file_count += 1;
+            }
+
             children.push(FileNode {
-                name: entry.file_name().to_string_lossy().to_string(),
-                path: path_str,
+                name,
+                path: normalized_child,
                 size,
-                base_size: node_base_size,
+                allocated_size,
+                base_size: if is_dir { 0 } else { size.unwrap_or(0) },
+                base_allocated_size: if is_dir { 0 } else { allocated_size.unwrap_or(0) },
                 is_dir,
-                file_count,
+                is_restricted,
+                file_count: count,
                 children: None,
             });
         }
@@ -267,7 +300,7 @@ async fn analyze_directory(
         let mut cache = state.size_cache.lock().unwrap();
         cache.insert(
             root_path.clone(),
-            (current_dir_base_size, children.len() as u64),
+            (current_dir_base_size, current_dir_base_allocated_size, current_dir_file_count, false),
         );
     }
 
@@ -301,14 +334,18 @@ async fn analyze_directory(
         let app_handle = app.clone();
         let root_to_compute = root_path.clone();
 
-        thread::spawn(move || {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                compute_dir_size_recursive(root_to_compute.clone(), cache, app_handle);
-            }));
+        std::thread::Builder::new()
+            .name("dir_size_worker".to_string())
+            .stack_size(8 * 1024 * 1024) // 8MB 栈大小 / 8MB stack size
+            .spawn(move || {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    compute_dir_size_recursive(root_to_compute.clone(), cache, app_handle, 0);
+                }));
 
-            let mut in_progress = in_progress.lock().unwrap();
-            in_progress.remove(&root_to_compute);
-        });
+                let mut in_progress = in_progress.lock().unwrap();
+                in_progress.remove(&root_to_compute);
+            })
+            .expect("Failed to spawn background thread");
     }
 
     let name = path_obj
@@ -316,12 +353,12 @@ async fn analyze_directory(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| root_path.clone());
 
-    let (root_size, root_count) = {
+    let (root_size, root_allocated, root_count, root_restricted) = {
         let cache = state.size_cache.lock().unwrap();
-        if let Some((s, c)) = cache.get(&root_path) {
-            (Some(*s), *c)
+        if let Some(res) = cache.get(&root_path) {
+            (Some(res.0), Some(res.1), res.2, res.3)
         } else {
-            (None, 0)
+            (None, None, current_dir_file_count, false)
         }
     };
 
@@ -329,8 +366,11 @@ async fn analyze_directory(
         name,
         path: root_path,
         size: root_size,
+        allocated_size: root_allocated,
         base_size: current_dir_base_size,
+        base_allocated_size: current_dir_base_allocated_size,
         is_dir: true,
+        is_restricted: root_restricted,
         file_count: root_count,
         children: Some(children),
     })

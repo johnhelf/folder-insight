@@ -1,7 +1,7 @@
 {
   "name": "folder-insight",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "晓宇映辰",
   "description": "可视化您的磁盘空间",
   "type": "module",
@@ -17,6 +17,7 @@
     "@tauri-apps/plugin-fs": "^2.4.5",
     "@tauri-apps/plugin-opener": "^2.5.3",
     "clsx": "^2.1.1",
+    "framer-motion": "^12.31.3",
     "lucide-react": "^0.562.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

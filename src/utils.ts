@@ -9,3 +9,11 @@ export function formatSize(bytes: number): string {
 export function cn(...inputs: any[]) {
   return inputs.filter(Boolean).join(" ");
 }
+
+/**
+ * 判断当前是否运行在 Tauri 环境中。
+ * Check if the app is running in a Tauri environment.
+ */
+export const isTauri = () => {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+};

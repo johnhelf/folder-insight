@@ -4,26 +4,16 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { 
   FolderOpen, 
-  ChevronRight, 
-  ChevronDown, 
-  File, 
   Folder, 
   BarChart3, 
-  TreeDeciduous,
-  Loader2,
-  HardDrive,
-  Files,
-  Heart,
-  X
+  TreeDeciduous, 
+  Loader2, 
+  HardDrive, 
+  Files, 
+  Heart 
 } from "lucide-react";
-import { 
-  PieChart, 
-  Pie, 
-  Cell, 
-  ResponsiveContainer, 
-  Tooltip as RechartsTooltip,
-} from "recharts";
-import { formatSize, cn } from "./utils";
+import { AnimatePresence, motion } from "framer-motion";
+import { formatSize, cn, isTauri } from "./utils";
 import {
   createTranslator,
   detectSystemLocale,
@@ -33,23 +23,11 @@ import {
   resolveLocale,
   type LanguageMode,
 } from "./i18n";
-
-interface FileNode {
-  name: string;
-  path: string;
-  size: number | null;
-  is_dir: boolean;
-  file_count: number;
-  children: FileNode[] | null;
-}
-
-interface SizeUpdate {
-    path: string;
-    size: number;
-    file_count: number;
-}
-
-const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
+import { FileNode, SizeUpdate } from "./types";
+import { SponsorModal } from "./components/SponsorModal";
+import { TreeView } from "./components/TreeView";
+import { ChartView } from "./components/ChartView";
+import { TreemapView } from "./components/TreemapView";
 
 /**
  * 应用主组件：展示目录树与统计信息，并监听后端实时大小更新。
@@ -59,10 +37,12 @@ function App() {
   const [data, setData] = useState<FileNode | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<'tree' | 'chart'>('tree');
+  const [view, setView] = useState<'tree' | 'chart' | 'treemap'>('tree');
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
   const [isDragActive, setIsDragActive] = useState(false);
+  const [currentViewPath, setCurrentViewPath] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'pie' | 'bar'>('pie');
   const [languageMode, setLanguageMode] = useState<LanguageMode>(getInitialLanguageMode());
   const [systemLocale, setSystemLocale] = useState(detectSystemLocale());
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
@@ -151,7 +131,13 @@ function App() {
 
     const updateRecursively = (node: FileNode): FileNode => {
       if (normalizePathForMatch(node.path) === targetPath) {
-        return { ...node, size: update.size, file_count: update.file_count };
+        return {
+          ...node,
+          size: update.size,
+          allocated_size: update.allocated_size,
+          is_restricted: update.is_restricted,
+          file_count: update.file_count,
+        };
       }
 
       if (!node.children) return node;
@@ -177,6 +163,10 @@ function App() {
    * Start analysis flow: reset UI state then invoke backend analyze_directory.
    */
   const analyzePath = useCallback(async (path: string) => {
+    if (!isTauri()) {
+      setError("Please run this app inside Tauri to use file scanning features.");
+      return;
+    }
     try {
       setLoading(true);
       setError(null);
@@ -196,6 +186,7 @@ function App() {
       pendingUpdates.current.clear();
 
       setData(updatedResult);
+      setCurrentViewPath(updatedResult.path);
       setExpandedPaths(new Set([result.path as string]));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -250,6 +241,8 @@ function App() {
 
   // 监听后台大小更新事件
   useEffect(() => {
+    if (!isTauri()) return;
+
     const unlistenPromise = listen<SizeUpdate>('folder-size-updated', (event) => {
       const update = event.payload;
       const normalizedPath = normalizePathForMatch(update.path);
@@ -275,6 +268,8 @@ function App() {
    * Listen to system file drag-drop events (Tauri): start analysis on folder drop.
    */
   useEffect(() => {
+    if (!isTauri()) return;
+
     /**
      * 从不同版本/不同形态的拖拽事件 payload 中提取路径数组。
      * Extract dropped paths from drag-drop payloads across different event shapes/versions.
@@ -394,6 +389,10 @@ function App() {
    * Select a folder and invoke backend analysis entry.
    */
   const handleSelectFolder = async () => {
+    if (!isTauri()) {
+      setError("Please run this app inside Tauri to use file scanning features.");
+      return;
+    }
     try {
       const selected = await open({
         directory: true,
@@ -414,6 +413,7 @@ function App() {
    * @param path 节点路径 / Node path
    */
   const toggleExpand = async (path: string) => {
+    if (!isTauri()) return;
     const newExpanded = new Set(expandedPaths);
 
     if (newExpanded.has(path)) {
@@ -485,6 +485,7 @@ function App() {
    * Open the context-selected path in system file explorer.
    */
   const handleOpenInExplorer = async () => {
+    if (!isTauri()) return;
     if (contextMenu) {
       try {
         await invoke('open_in_explorer', { path: contextMenu.path });
@@ -496,23 +497,27 @@ function App() {
   };
 
   /**
-   * 统计图数据：仅展示已计算完成的根级子项，并将小项聚合到“其他”。
-   * Chart dataset: only includes computed root children; groups small items into "Other".
+   * 统计图数据：仅展示当前视图路径下的计算完成子项，并将小项聚合到“其他”。
+   * Chart dataset: only includes computed children of current view path; groups small items into "Other".
    */
   const chartData = useMemo(() => {
-    if (!data?.children) return [];
+    if (!data) return [];
+
+    // 根据 currentViewPath 找到对应节点
+    const targetNode = currentViewPath ? findNodeByPath(data, currentViewPath) : data;
+    if (!targetNode?.children) return [];
 
     const MAX_SLICES = 20;
     const OTHER_RATIO = 0.01;
 
-    const childrenWithSize = data.children.filter(child => child.size !== null);
+    const childrenWithSize = targetNode.children.filter(child => child.size !== null);
     const totalSize = childrenWithSize.reduce((acc, child) => acc + (child.size || 0), 0);
     if (totalSize === 0) return [];
 
     const threshold = totalSize * OTHER_RATIO;
     const sortedChildren = [...childrenWithSize].sort((a, b) => (b.size || 0) - (a.size || 0));
 
-    const items: { name: string; value: number; formattedSize: string }[] = [];
+    const items: { name: string; value: number; formattedSize: string; path: string; isDir: boolean }[] = [];
     let otherSize = 0;
     let otherCount = 0;
 
@@ -530,6 +535,8 @@ function App() {
         name: child.name,
         value: size,
         formattedSize: formatSize(size),
+        path: child.path,
+        isDir: child.is_dir,
       });
     }
 
@@ -538,66 +545,81 @@ function App() {
         name: t('otherItems', { count: otherCount.toLocaleString(numberLocale) }),
         value: otherSize,
         formattedSize: formatSize(otherSize),
+        path: '',
+        isDir: false,
       });
     }
 
     return items;
-  }, [data, numberLocale, t]);
+  }, [data, currentViewPath, numberLocale, t]);
 
   /**
-   * 递归渲染目录树。
-   * Recursively render directory tree.
-   * @param node 当前节点 / Current node
-   * @param depth 递归深度（用于缩进） / Depth (for indentation)
+   * 处理图表点击下钻
+   * Handle chart click drill-down
    */
-  const renderTree = (node: FileNode, depth = 0) => {
-    const isExpanded = expandedPaths.has(node.path as string);
-    const isLoading = loadingPaths.has(node.path as string);
+  const handleChartClick = async (item: any) => {
+    if (!isTauri()) return;
+    if (item && item.isDir && item.path) {
+      // 检查是否需要加载子目录数据
+      // Check if we need to load subdirectory data
+      const node = findNodeByPath(data!, item.path);
+      if (node && node.is_dir && !node.children) {
+        setLoading(true);
+        try {
+          const result = await invoke<FileNode>("analyze_directory", { path: item.path });
+          
+          setData(prev => {
+            if (!prev) return null;
+            let updatedNode = result;
+            pendingUpdates.current.forEach((update) => {
+              updatedNode = applySizeUpdate(updatedNode, update);
+            });
+            pendingUpdates.current.delete(normalizePathForMatch(item.path));
 
-    return (
-      <div key={node.path as string} className="select-none">
-        <div 
-          className={cn(
-            "flex items-center py-1 px-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded cursor-pointer transition-colors group",
-            depth === 0 && "font-bold text-lg"
-          )}
-          style={{ paddingLeft: `${depth * 1.5 + 0.5}rem` }}
-          onClick={() => node.is_dir && !isLoading && toggleExpand(node.path as string)}
-          onContextMenu={(e) => handleContextMenu(e, node.path as string)}
-        >
-          <span className="mr-1 text-gray-500">
-            {isLoading ? (
-                <Loader2 size={16} className="animate-spin" />
-            ) : node.is_dir ? (
-              isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />
-            ) : (
-              <span className="w-4" />
-            )}
-          </span>
-          <span className="mr-2">
-            {node.is_dir ? (
-              <Folder size={18} className="text-blue-500 fill-blue-500/20" />
-            ) : (
-              <File size={18} className="text-gray-400" />
-            )}
-          </span>
-          <span className="flex-1 truncate mr-4">{node.name}</span>
-          <div className="flex items-center gap-4 text-xs text-gray-400 font-mono group-hover:text-gray-600 dark:group-hover:text-gray-300">
-            <span className="w-20 text-right truncate">
-              {node.is_dir ? t('itemsCount', { count: node.file_count.toLocaleString(numberLocale) }) : '-'}
-            </span>
-            <span className="w-24 text-right truncate">
-              {node.size === null ? t('calculating') : formatSize(node.size)}
-            </span>
-          </div>
-        </div>
-        {node.is_dir && isExpanded && node.children && (
-          <div>
-            {node.children.map(child => renderTree(child, depth + 1))}
-          </div>
-        )}
-      </div>
-    );
+            return updateNodeAtPath(prev, item.path, {
+              children: updatedNode.children || [],
+              size: updatedNode.size !== null ? updatedNode.size : findNodeByPath(prev, item.path)?.size || null,
+              file_count: updatedNode.size !== null ? updatedNode.file_count : findNodeByPath(prev, item.path)?.file_count || 0
+            });
+          });
+        } catch (err) {
+          console.error(`Error loading ${item.path}:`, err);
+        } finally {
+          setLoading(false);
+        }
+      }
+      setCurrentViewPath(item.path);
+    }
+  };
+
+  /**
+   * 返回上一级
+   * Go back to parent directory
+   */
+  const handleGoUp = () => {
+    if (!data || !currentViewPath || normalizePathForMatch(currentViewPath) === normalizePathForMatch(data.path)) return;
+
+    // 简单实现：通过路径字符串操作找到上一级
+    // Simple implementation: find parent by path string manipulation
+    // 更好的方式可能是维护一个 stack 或者在 FileNode 中添加 parent 引用
+    // Better way might be maintaining a stack or adding parent ref in FileNode
+    
+    // 尝试在树中查找父节点
+    // Try to find parent node in tree
+    const findParent = (root: FileNode, targetPath: string): FileNode | null => {
+      if (!root.children) return null;
+      for (const child of root.children) {
+        if (normalizePathForMatch(child.path) === normalizePathForMatch(targetPath)) return root;
+        const found = findParent(child, targetPath);
+        if (found) return found;
+      }
+      return null;
+    };
+
+    const parent = findParent(data, currentViewPath);
+    if (parent) {
+      setCurrentViewPath(parent.path);
+    }
   };
 
   return (
@@ -630,40 +652,72 @@ function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* 赞助作者按钮 / Sponsor button */}
+            {/* 赞助作者按钮 / Sponsor button - Responsive Hide */}
             <button
               onClick={() => setIsSponsorModalOpen(true)}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-pink-600 dark:text-pink-400 hover:bg-pink-50 dark:hover:bg-pink-900/20 rounded-lg transition-colors border border-pink-200 dark:border-pink-800"
+              className="hidden sm:flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-pink-600 dark:text-pink-400 hover:bg-pink-50 dark:hover:bg-pink-900/20 rounded-lg transition-colors border border-pink-200 dark:border-pink-800"
             >
               <Heart size={16} className="fill-pink-500" />
               <span>{t('sponsor')}</span>
             </button>
 
-            <div className="h-6 w-px bg-gray-200 dark:bg-gray-800 mx-1" />
+            <div className="hidden sm:block h-6 w-px bg-gray-200 dark:bg-gray-800 mx-1" />
+            
             {data && (
               <div className="flex bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
                 <button 
                   onClick={() => setView('tree')}
+                  title={t('treeView')}
                   className={cn(
                     "px-3 py-1.5 rounded-md flex items-center gap-2 text-sm transition-all",
                     view === 'tree' ? "bg-white dark:bg-gray-700 shadow-sm" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                   )}
                 >
                   <TreeDeciduous size={16} />
-                  {t('treeView')}
+                  <span className="hidden lg:inline">{t('treeView')}</span>
                 </button>
                 <button 
-                  onClick={() => setView('chart')}
+                  onClick={() => setView('treemap')}
+                  title={t('treemapView')}
                   className={cn(
                     "px-3 py-1.5 rounded-md flex items-center gap-2 text-sm transition-all",
-                    view === 'chart' ? "bg-white dark:bg-gray-700 shadow-sm" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                    view === 'treemap' ? "bg-white dark:bg-gray-700 shadow-sm" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                   )}
                 >
                   <BarChart3 size={16} />
-                  {t('chartView')}
+                  <span className="hidden lg:inline">{t('treemapView')}</span>
+                </button>
+                <button 
+                  onClick={() => {
+                    setView('chart');
+                    setViewMode('pie');
+                  }}
+                  title={t('chartView')}
+                  className={cn(
+                    "px-3 py-1.5 rounded-md flex items-center gap-2 text-sm transition-all",
+                    view === 'chart' && viewMode === 'pie' ? "bg-white dark:bg-gray-700 shadow-sm" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                  )}
+                >
+                  <BarChart3 size={16} />
+                  <span className="hidden lg:inline">{t('chartView')}</span>
+                </button>
+                <button 
+                  onClick={() => {
+                    setView('chart');
+                    setViewMode('bar');
+                  }}
+                  title={t('barChartView')}
+                  className={cn(
+                    "px-3 py-1.5 rounded-md flex items-center gap-2 text-sm transition-all",
+                    view === 'chart' && viewMode === 'bar' ? "bg-white dark:bg-gray-700 shadow-sm" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                  )}
+                >
+                  <BarChart3 size={16} className="rotate-90" />
+                  <span className="hidden lg:inline">{t('barChartView')}</span>
                 </button>
               </div>
             )}
+            
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
                 onClick={() => setIsLanguageMenuOpen(v => !v)}
@@ -671,7 +725,8 @@ function App() {
                 aria-haspopup="menu"
                 aria-expanded={isLanguageMenuOpen}
               >
-                {currentLanguageLabel}
+                <span className="hidden sm:inline">{currentLanguageLabel}</span>
+                <span className="sm:hidden">{languageMode === 'auto' ? 'Auto' : languageMode.toUpperCase()}</span>
               </button>
               {isLanguageMenuOpen && (
                 <div className="absolute right-0 mt-2 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[200px]">
@@ -699,10 +754,10 @@ function App() {
             <button 
               onClick={handleSelectFolder}
               disabled={loading}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors disabled:opacity-50"
+              title={t('selectFolder')}
+              className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-lg flex items-center justify-center transition-colors disabled:opacity-50 shrink-0"
             >
-              {loading ? <Loader2 className="animate-spin" size={18} /> : <FolderOpen size={18} />}
-              {t('selectFolder')}
+              {loading ? <Loader2 className="animate-spin" size={20} /> : <FolderOpen size={20} />}
             </button>
           </div>
         </div>
@@ -803,147 +858,75 @@ function App() {
               </div>
             </div>
 
-            <div className="flex-1 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden flex flex-col">
-              {view === 'tree' ? (
-                <div className="flex-1 flex flex-col overflow-hidden">
-                  <div className="flex items-center px-4 py-2 border-b border-gray-100 dark:border-gray-800 text-xs font-medium text-gray-500 bg-gray-50/50 dark:bg-gray-800/50 select-none shrink-0">
-                    <span className="flex-1 ml-8">{t('name')}</span>
-                    <div className="flex items-center gap-4">
-                      <span className="w-20 text-right">{t('fileCount')}</span>
-                      <span className="w-24 text-right">{t('size')}</span>
-                    </div>
-                  </div>
-                  <div ref={fileListRef} className="flex-1 overflow-auto p-2">
-                    {renderTree(data)}
-                  </div>
-                </div>
-              ) : (
-                <div className="p-8 h-full flex flex-col items-center">
-                  <h3 className="text-lg font-semibold mb-6 shrink-0">{t('topTitle')}</h3>
-                  <div className="w-full flex-1 flex flex-col md:flex-row items-center justify-around overflow-hidden">
-                    <div className="w-full md:w-1/2 h-full min-h-[300px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={chartData}
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={80}
-                            outerRadius={120}
-                            paddingAngle={5}
-                            dataKey="value"
-                          >
-                            {chartData.map((_, index) => (
-                              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                            ))}
-                          </Pie>
-                          <RechartsTooltip 
-                            formatter={(value: any) => formatSize(Number(value || 0))}
-                            contentStyle={{ 
-                              backgroundColor: 'rgba(255, 255, 255, 0.96)',
-                              borderRadius: '8px',
-                              border: 'none',
-                              boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
-                            }}
-                          />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <div className="w-full md:w-1/2 flex flex-col gap-2 overflow-auto max-h-full p-4">
-                      {chartData.map((item, index) => (
-                        <div key={item.name as string} className="flex items-center gap-3">
-                          <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                          <span className="flex-1 truncate text-sm">{item.name}</span>
-                          <span className="text-sm font-mono text-gray-500">{item.formattedSize}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
+            <div className="flex-1 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden flex flex-col relative">
+              <AnimatePresence mode="wait">
+                {view === 'tree' ? (
+                  <motion.div
+                    key="tree"
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 20 }}
+                    transition={{ duration: 0.2 }}
+                    className="flex-1 flex flex-col overflow-hidden"
+                  >
+                    <TreeView 
+                      data={data}
+                      expandedPaths={expandedPaths}
+                      loadingPaths={loadingPaths}
+                      onToggleExpand={toggleExpand}
+                      onContextMenu={handleContextMenu}
+                      t={t}
+                      numberLocale={numberLocale}
+                    />
+                  </motion.div>
+                ) : view === 'treemap' ? (
+                  <motion.div
+                    key="treemap"
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 1.05 }}
+                    transition={{ duration: 0.2 }}
+                    className="flex-1 overflow-hidden"
+                  >
+                    <TreemapView 
+                      data={chartData}
+                      t={t}
+                      onDrillDown={handleChartClick}
+                      onGoUp={handleGoUp}
+                      canGoUp={!!currentViewPath && normalizePathForMatch(currentViewPath) !== normalizePathForMatch(data.path)}
+                    />
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="chart"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.2 }}
+                    className="flex-1 overflow-hidden"
+                  >
+                    <ChartView 
+                      chartData={chartData}
+                      t={t}
+                      onDrillDown={handleChartClick}
+                      onGoUp={handleGoUp}
+                      canGoUp={!!currentViewPath && normalizePathForMatch(currentViewPath) !== normalizePathForMatch(data.path)}
+                      viewMode={viewMode}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </div>
         )}
       </main>
 
       {/* 赞助弹窗 / Sponsor Modal */}
-      {isSponsorModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div 
-            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-            onClick={() => setIsSponsorModalOpen(false)}
-          />
-          <div className="relative w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-800 overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div className="p-6">
-              <div className="flex items-center justify-between mb-6">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-pink-100 dark:bg-pink-900/30 rounded-full flex items-center justify-center text-pink-600 dark:text-pink-400">
-                    <Heart size={20} className="fill-pink-500" />
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-bold">{t('sponsorTitle')}</h2>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">{t('sponsorSubtitle')}</p>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => setIsSponsorModalOpen(false)}
-                  className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-
-              <div className="flex flex-col gap-4">
-                {/* 国内扫码区域 / Domestic QR Code */}
-                <div className="bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-200 dark:border-gray-700 p-4 flex flex-col items-center">
-                  <div className="w-40 h-40 bg-white p-2 rounded-lg shadow-inner mb-2 flex items-center justify-center overflow-hidden">
-                    <img 
-                      src="/sponsor-qr.png" 
-                      alt="Sponsor QR Code"
-                      className="w-full h-full object-contain"
-                      onError={(e) => {
-                        e.currentTarget.style.display = 'none';
-                        e.currentTarget.parentElement!.innerHTML = `
-                          <div class="text-gray-300 text-[10px] italic text-center">
-                            Alipay QR<br/>(sponsor-qr.png)
-                          </div>
-                        `;
-                      }}
-                    />
-                  </div>
-                  <p className="text-[10px] text-gray-400 uppercase tracking-wider font-bold">Alipay</p>
-                </div>
-
-                {/* 海外支付链接区域 / International Payment Link */}
-                <div className="flex flex-col gap-2">
-                  <a
-                    href="https://buymeacoffee.com/johnhelf" 
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-2 w-full py-2 bg-[#FFDD00] hover:bg-[#ffed4a] text-black rounded-xl font-bold text-sm transition-colors"
-                  >
-                    <img src="https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg" alt="BMC" className="w-4 h-4" />
-                    <span>Buy Me a Coffee</span>
-                  </a>
-                  
-                  <p className="text-[10px] text-gray-400 text-center">
-                    {t('sponsorSubtitle')}
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-6 flex flex-col gap-2">
-                <button
-                  onClick={() => setIsSponsorModalOpen(false)}
-                  className="w-full py-2.5 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-xl font-semibold hover:opacity-90 transition-opacity"
-                >
-                  {t('close')}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <SponsorModal 
+        isOpen={isSponsorModalOpen} 
+        onClose={() => setIsSponsorModalOpen(false)} 
+        t={t}
+      />
     </div>
   );
 }
