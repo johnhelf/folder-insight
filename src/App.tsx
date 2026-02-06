@@ -855,7 +855,7 @@ function App() {
               </div>
             </div>
 
-            <div className="flex-1 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden flex flex-col relative">
+            <div ref={fileListRef} className="flex-1 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden flex flex-col relative">
               <AnimatePresence mode="wait">
                 {view === 'tree' ? (
                   <motion.div
