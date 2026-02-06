@@ -84,6 +84,7 @@ function App() {
   } | null>(null);
 
   const locale = useMemo(() => resolveLocale(languageMode, systemLocale), [languageMode, systemLocale]);
+  const isRTL = locale === 'ar';
   const t = useMemo(() => createTranslator(locale), [locale]);
   const numberLocale = locale === 'zh' ? 'zh-CN' : 'en-US';
 
@@ -203,7 +204,10 @@ function App() {
       ([
         { mode: 'auto', label: `${t('languageAuto')} (${getLocaleNativeName(systemLocale)})` },
         { mode: 'zh', label: getLocaleNativeName('zh') },
+        { mode: 'zh_tw', label: getLocaleNativeName('zh_tw') },
         { mode: 'en', label: getLocaleNativeName('en') },
+        { mode: 'ru', label: getLocaleNativeName('ru') },
+        { mode: 'ar', label: getLocaleNativeName('ar') },
         { mode: 'ja', label: getLocaleNativeName('ja') },
         { mode: 'ko', label: getLocaleNativeName('ko') },
         { mode: 'es', label: getLocaleNativeName('es') },
@@ -623,7 +627,11 @@ function App() {
 
   return (
     <div
-      className="h-screen flex flex-col bg-[#f8f9fa] dark:bg-[#0f1117] text-gray-900 dark:text-gray-100 font-sans overflow-hidden"
+      className={cn(
+        "h-screen flex flex-col bg-[#f8f9fa] dark:bg-[#0f1117] text-gray-900 dark:text-gray-100 font-sans overflow-hidden",
+        isRTL && "rtl"
+      )}
+      dir={isRTL ? "rtl" : "ltr"}
       onContextMenu={handleGlobalContextMenu}
     >
       {isDragActive && (
@@ -711,8 +719,14 @@ function App() {
                 <span className="sm:hidden">{languageMode === 'auto' ? 'Auto' : languageMode.toUpperCase()}</span>
               </button>
               {isLanguageMenuOpen && (
-                <div className="absolute right-0 mt-2 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[200px]">
-                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 select-none">
+                <div className={cn(
+                  "absolute mt-2 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[200px]",
+                  isRTL ? "left-0" : "right-0"
+                )}>
+                  <div className={cn(
+                    "px-3 py-2 text-xs text-gray-500 dark:text-gray-400 select-none",
+                    isRTL ? "text-right" : "text-left"
+                  )}>
                     {t('languageTitle')}
                   </div>
                   {languageOptions.map(opt => (
@@ -723,7 +737,8 @@ function App() {
                         setIsLanguageMenuOpen(false);
                       }}
                       className={cn(
-                        "w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        "w-full px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        isRTL ? "text-right" : "text-left",
                         languageMode === opt.mode ? "bg-gray-100 dark:bg-gray-700" : "",
                       )}
                     >

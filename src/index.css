@@ -33,3 +33,7 @@ body {
     background-color: #ffffff;
   }
 }
+
+.rtl {
+  direction: rtl;
+}

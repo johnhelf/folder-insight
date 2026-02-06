@@ -1,16 +1,19 @@
-export type Locale = 'zh' | 'en' | 'ja' | 'ko' | 'es' | 'fr' | 'de';
+export type Locale = 'zh' | 'en' | 'ja' | 'ko' | 'es' | 'fr' | 'de' | 'zh_tw' | 'ru' | 'ar';
 export type LanguageMode = 'auto' | Locale;
 
 const STORAGE_KEY = 'languageMode';
 
 const normalizeLocale = (lang: string | null | undefined): Locale => {
   const value = (lang ?? '').toLowerCase();
+  if (value === 'zh-tw' || value === 'zh-hk' || value === 'zh-mo') return 'zh_tw';
   if (value.startsWith('zh')) return 'zh';
   if (value.startsWith('ja')) return 'ja';
   if (value.startsWith('ko')) return 'ko';
   if (value.startsWith('es')) return 'es';
   if (value.startsWith('fr')) return 'fr';
   if (value.startsWith('de')) return 'de';
+  if (value.startsWith('ru')) return 'ru';
+  if (value.startsWith('ar')) return 'ar';
   return 'en';
 };
 
@@ -30,7 +33,10 @@ export const getInitialLanguageMode = (): LanguageMode => {
       stored === 'ko' ||
       stored === 'es' ||
       stored === 'fr' ||
-      stored === 'de'
+      stored === 'de' ||
+      stored === 'zh_tw' ||
+      stored === 'ru' ||
+      stored === 'ar'
     ) {
       return stored;
     }
@@ -64,6 +70,12 @@ export const getLocaleNativeName = (locale: Locale) => {
       return 'Français';
     case 'de':
       return 'Deutsch';
+    case 'zh_tw':
+      return '繁體中文';
+    case 'ru':
+      return 'Русский';
+    case 'ar':
+      return 'العربية';
   }
 };
 
@@ -312,6 +324,111 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     close: 'Schließen',
     goUp: 'Nach oben',
     chartView: 'Aufschlüsselung',
+  },
+  zh_tw: {
+    appTitle: '文件夾洞察',
+    subtitle: '可視化您的磁盤空間',
+    treeView: '樹狀圖',
+    treemapView: '矩形樹圖',
+    treemapTitle: '文件大小分佈矩形樹圖',
+    noData: '暫無數據',
+    selectFolder: '選擇文件夾',
+    totalSize: '總大小',
+    totalFiles: '文件總數',
+    rootDirectory: '根目錄',
+    name: '名稱',
+    size: '邏輯大小',
+    allocatedSize: '實際佔用',
+    fileCount: '文件數',
+    itemsCount: '{count} 項',
+    restricted: '訪問受限',
+    calculating: '計算中...',
+    calculatingInline: ' (計算中...)',
+    analyzing: '正在分析文件夾內容，請稍候...',
+    emptyHint: '請選擇一個文件夾開始分析',
+    openInExplorer: '用文件資源管理器打開',
+    topTitle: '佔比分析',
+    dragHintTitle: '拖拽文件夾到窗口開始分析',
+    dragHintSubtitle: 'Drop a folder to start analysis',
+    otherItems: '其他 ({count}項)',
+    languageAuto: '隨統系統',
+    languageTitle: '語言',
+    sponsor: '贊助作者',
+    sponsorTitle: '贊助支持',
+    sponsorSubtitle: '如果您覺得這個工具有幫助，歡迎贊助支持作者的開發工作。',
+    close: '關閉',
+    goUp: '返回上一級',
+    chartView: '佔比分析',
+  },
+  ru: {
+    appTitle: 'Folder Insight',
+    subtitle: 'Визуализация дискового пространства',
+    treeView: 'Дерево',
+    treemapView: 'Деревовидная карта',
+    treemapTitle: 'Распределение размеров файлов',
+    noData: 'Нет данных',
+    selectFolder: 'Выбрать папку',
+    totalSize: 'Общий размер',
+    totalFiles: 'Всего файлов',
+    rootDirectory: 'Корневой каталог',
+    name: 'Имя',
+    size: 'Размер',
+    allocatedSize: 'На диске',
+    fileCount: 'Файлы',
+    itemsCount: '{count} элементов',
+    restricted: 'Ограничено',
+    calculating: 'Вычисление...',
+    calculatingInline: ' (Вычисление...)',
+    analyzing: 'Анализ папки, пожалуйста, подождите...',
+    emptyHint: 'Выберите папку для начала анализа',
+    openInExplorer: 'Открыть в проводнике',
+    topTitle: 'Анализ состава',
+    dragHintTitle: 'Перетащите папку для анализа',
+    dragHintSubtitle: 'Перетащите папку сюда для начала анализа',
+    otherItems: 'Другие ({count})',
+    languageAuto: 'Авто',
+    languageTitle: 'Язык',
+    sponsor: 'Поддержать',
+    sponsorTitle: 'Поддержка автора',
+    sponsorSubtitle: 'Если этот инструмент был вам полезен, вы можете поддержать разработчика.',
+    close: 'Закрыть',
+    goUp: 'На уровень вверх',
+    chartView: 'Анализ состава',
+  },
+  ar: {
+    appTitle: 'Folder Insight',
+    subtitle: 'تصور مساحة القرص الخاصة بك',
+    treeView: 'شجرة',
+    treemapView: 'خريطة شجرية',
+    treemapTitle: 'خريطة توزيع أحجام الملفات',
+    noData: 'لا توجد بيانات',
+    selectFolder: 'اختر مجلداً',
+    totalSize: 'الحجم الإجمالي',
+    totalFiles: 'إجمالي الملفات',
+    rootDirectory: 'المجلد الرئيسي',
+    name: 'الاسم',
+    size: 'الحجم',
+    allocatedSize: 'المساحة المستخدمة',
+    fileCount: 'الملفات',
+    itemsCount: '{count} عناصر',
+    restricted: 'مقيّد',
+    calculating: 'جاري الحساب...',
+    calculatingInline: ' (جاري الحساب...)',
+    analyzing: 'جاري تحليل محتويات المجلد، يرجى الانتظار...',
+    emptyHint: 'اختر مجلداً لبدء التحليل',
+    openInExplorer: 'فتح في مستكشف الملفات',
+    topTitle: 'تحليل التوزيع',
+    dragHintTitle: 'اسحب المجلد هنا لبدء التحليل',
+    dragHintSubtitle: 'اسحب وأفلت مجلداً لبدء التحليل',
+    otherItems: 'أخرى ({count})',
+    languageAuto: 'تلقائي',
+    languageTitle: 'اللغة',
+    sponsor: 'دعم المؤلف',
+    sponsorTitle: 'الدعم والمساهمة',
+    sponsorSubtitle: 'إذا وجدت هذه الأداة مفيدة، فلا تتردد في دعم عمل المطور.',
+    close: 'إغلاق',
+    goUp: 'للأعلى',
+    chartView: 'تحليل التوزيع',
   },
 };
 
