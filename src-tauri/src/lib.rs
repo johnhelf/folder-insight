@@ -69,10 +69,32 @@ async fn open_in_explorer(path: String) -> Result<(), String> {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        let _ = path;
-        return Err("Not supported on this OS".to_string());
+        use std::process::Command;
+        Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        let path_buf = PathBuf::from(&path);
+        // Linux 下 xdg-open 通常不支持选中文件，所以如果是文件，我们打开其父目录
+        // Linux xdg-open usually doesn't support selecting files, so if it's a file, open its parent dir
+        let target_path = if path_buf.is_file() {
+             path_buf.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| path.clone())
+        } else {
+             path.clone()
+        };
+
+        Command::new("xdg-open")
+            .arg(&target_path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
 
     Ok(())
