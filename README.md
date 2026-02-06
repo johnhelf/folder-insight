@@ -59,6 +59,20 @@
    npm run tauri dev
    ```
 
+4. 构建生产版本：
+   ```bash
+   npm run tauri build
+   ```
+   安装 x86 目标平台：
+   ```bash
+   rustup target add i686-pc-windows-msvc
+   ```
+
+   构建 x86 版本：
+   ```bash
+   npx tauri build --target i686-pc-windows-msvc
+   ```
+
 ---
 
 <a name="english"></a>
