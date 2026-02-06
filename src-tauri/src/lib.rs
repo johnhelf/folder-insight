@@ -1,20 +1,18 @@
-use rayon::prelude::*;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+use walkdir::WalkDir;
 
 /// 应用程序状态（全局共享）
-/// App state (shared globally)
 struct AppState {
     /// 简单结果缓存：只存储最终计算结果
-    /// Simple result cache: stores final results only
     /// Key: path, Value: (logical_size, allocated_size, file_count, is_restricted)
     size_cache: Arc<Mutex<HashMap<String, (u64, u64, u64, bool)>>>,
     /// 进行中的计算集合，用于避免重复启动后台计算
-    /// In-progress set to prevent duplicated background computations
     in_progress: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -27,7 +25,7 @@ pub struct FileNode {
     base_size: u64,
     base_allocated_size: u64,
     is_dir: bool,
-    is_restricted: bool, // 新增：是否受限 / New: whether it's restricted
+    is_restricted: bool,
     file_count: u64,
     children: Option<Vec<FileNode>>,
 }
@@ -41,24 +39,22 @@ struct SizeUpdate {
     file_count: u64,
 }
 
-/// 规范化路径字符串，避免缓存 key 因路径写法不同而不一致
-/// Normalize a path string to keep cache keys consistent across different representations.
+/// 规范化路径字符串
 fn normalize_path_string(path: &str) -> String {
-    std::path::PathBuf::from(path)
+    PathBuf::from(path)
         .components()
-        .collect::<std::path::PathBuf>()
+        .collect::<PathBuf>()
         .to_string_lossy()
         .to_string()
 }
 
 /// 在资源管理器中打开指定路径
-/// Open the given path in OS file explorer.
 #[tauri::command]
 async fn open_in_explorer(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
-        let path_buf = std::path::PathBuf::from(&path);
+        let path_buf = PathBuf::from(&path);
 
         if path_buf.is_dir() {
             Command::new("explorer")
@@ -75,6 +71,7 @@ async fn open_in_explorer(path: String) -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = path;
         return Err("Not supported on this OS".to_string());
     }
 
@@ -83,10 +80,6 @@ async fn open_in_explorer(path: String) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn get_allocated_size(_path: &Path, logical_size: u64) -> u64 {
-    // Windows 上 meta.len() 通常就是逻辑大小。
-    // 实际占用空间（Allocated Size）通常按簇（Cluster）对齐。
-    // 为了精确，我们可以使用 GetCompressedFileSizeW 处理压缩文件。
-    // 但作为通用方案，按 4KB 簇对齐是一个合理的估算。
     const CLUSTER_SIZE: u64 = 4096;
     if logical_size == 0 {
         return 0;
@@ -96,7 +89,6 @@ fn get_allocated_size(_path: &Path, logical_size: u64) -> u64 {
 
 #[cfg(not(target_os = "windows"))]
 fn get_allocated_size(path: &Path, logical_size: u64) -> u64 {
-    // Unix 系系统通常支持获取 blocks
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -107,106 +99,105 @@ fn get_allocated_size(path: &Path, logical_size: u64) -> u64 {
     logical_size
 }
 
-/// 递归计算目录大小（并行版），并通过事件实时回传结果
-/// Recursively compute directory size in parallel and emit realtime updates via events.
-fn compute_dir_size_recursive(
-    path_str: String,
+/// 后台扫描任务：使用 WalkDir 遍历并实时通过事件回传结果
+fn run_background_scan(
+    root_path: String,
     cache: Arc<Mutex<HashMap<String, (u64, u64, u64, bool)>>>,
     app_handle: AppHandle,
-    depth: usize,
-) -> (u64, u64, u64, bool) {
-    // 限制递归深度，防止极深目录导致栈溢出
-    // Limit recursion depth to prevent stack overflow in extremely deep directories
-    if depth > 500 {
-        return (0, 0, 0, true);
-    }
+) {
+    let mut dir_stats: HashMap<String, (u64, u64, u64, bool)> = HashMap::new();
+    let root_path_buf = PathBuf::from(&root_path);
+    let mut last_emit = Instant::now();
+    let mut pending_updates: HashSet<String> = HashSet::new();
 
-    let normalized_current = normalize_path_string(&path_str);
+    // 使用 WalkDir 进行深度优先遍历
+    for entry in WalkDir::new(&root_path_buf)
+        .into_iter()
+        .filter_map(|e| e.ok())
     {
-        let cache_lock = cache.lock().unwrap();
-        if let Some(res) = cache_lock.get(&normalized_current) {
-            return *res;
-        }
-    }
-
-    let path_obj = Path::new(&normalized_current);
-    let mut total_size = 0;
-    let mut total_allocated = 0;
-    let mut total_count = 0;
-    let mut subdirs = Vec::new();
-    let mut is_restricted = false;
-
-    match fs::read_dir(path_obj) {
-        Ok(entries) => {
-            for entry in entries.flatten() {
-                let entry_path = entry.path();
-                let meta = match fs::symlink_metadata(&entry_path) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-
-                if meta.is_dir() {
-                    subdirs.push(entry_path.to_string_lossy().to_string());
-                } else {
-                    let size = meta.len();
-                    total_size += size;
-                    total_allocated += get_allocated_size(&entry_path, size);
-                    total_count += 1;
+        let path = entry.path();
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => {
+                // 如果无法获取元数据，标记父目录受限
+                if let Some(parent) = path.parent() {
+                    let parent_str = normalize_path_string(&parent.to_string_lossy());
+                    let stats = dir_stats.entry(parent_str.clone()).or_insert((0, 0, 0, false));
+                    stats.3 = true;
+                    pending_updates.insert(parent_str);
                 }
+                continue;
             }
-        }
-        Err(_) => {
-            is_restricted = true;
-        }
-    }
+        };
 
-    let results: Vec<(u64, u64, u64, bool)> = subdirs
-        .par_iter()
-        .map(|subdir| {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                compute_dir_size_recursive(subdir.clone(), cache.clone(), app_handle.clone(), depth + 1)
-            }));
+        if !meta.is_dir() {
+            let size = meta.len();
+            let allocated = get_allocated_size(path, size);
 
-            match result {
-                Ok(res) => res,
-                Err(_) => {
-                    eprintln!("Panic processing subdir: {}", subdir);
-                    (0, 0, 0, true)
+            // 向上更新所有父目录的大小
+            let mut current = path.parent();
+            while let Some(p) = current {
+                if !p.starts_with(&root_path_buf) && p != root_path_buf {
+                    break;
                 }
-            }
-        })
-        .collect();
+                
+                let p_str = normalize_path_string(&p.to_string_lossy());
+                let stats = dir_stats.entry(p_str.clone()).or_insert((0, 0, 0, false));
+                stats.0 += size;
+                stats.1 += allocated;
+                stats.2 += 1;
+                pending_updates.insert(p_str);
 
-    for (s, a, c, r) in results {
-        total_size += s;
-        total_allocated += a;
-        total_count += c;
-        if r {
-            is_restricted = true;
+                if p == root_path_buf {
+                    break;
+                }
+                current = p.parent();
+            }
+        } else {
+            // 确保目录在 map 中存在
+            let p_str = normalize_path_string(&path.to_string_lossy());
+            dir_stats.entry(p_str.clone()).or_insert((0, 0, 0, false));
+            pending_updates.insert(p_str);
+        }
+
+        // 节流：每 200ms 发送一次更新
+        if last_emit.elapsed() > Duration::from_millis(200) {
+            emit_batch_updates(&app_handle, &dir_stats, &mut pending_updates);
+            last_emit = Instant::now();
         }
     }
 
-    {
-        let mut cache_lock = cache.lock().unwrap();
-        cache_lock.insert(normalized_current.clone(), (total_size, total_allocated, total_count, is_restricted));
+    // 最后发送剩余的更新并写入缓存
+    emit_batch_updates(&app_handle, &dir_stats, &mut pending_updates);
+    
+    let mut cache_lock = cache.lock().unwrap();
+    for (path, stats) in dir_stats {
+        cache_lock.insert(path, stats);
     }
-
-    let _ = app_handle.emit(
-        "folder-size-updated",
-        SizeUpdate {
-            path: normalized_current,
-            size: total_size,
-            allocated_size: total_allocated,
-            is_restricted,
-            file_count: total_count,
-        },
-    );
-
-    (total_size, total_allocated, total_count, is_restricted)
 }
 
-/// 判断是否需要启动后台计算，并在需要时标记为 in-progress
-/// Decide whether to start a background computation and mark it as in-progress when needed.
+fn emit_batch_updates(
+    app_handle: &AppHandle,
+    dir_stats: &HashMap<String, (u64, u64, u64, bool)>,
+    pending_updates: &mut HashSet<String>,
+) {
+    for path_str in pending_updates.drain() {
+        if let Some(stats) = dir_stats.get(&path_str) {
+            let _ = app_handle.emit(
+                "folder-size-updated",
+                SizeUpdate {
+                    path: path_str,
+                    size: stats.0,
+                    allocated_size: stats.1,
+                    is_restricted: stats.3,
+                    file_count: stats.2,
+                },
+            );
+        }
+    }
+}
+
+/// 判断是否需要启动后台计算
 fn try_mark_in_progress(
     normalized_path: &str,
     cache: &Arc<Mutex<HashMap<String, (u64, u64, u64, bool)>>>,
@@ -230,7 +221,6 @@ fn try_mark_in_progress(
 }
 
 /// 快速扫描目录结构，并启动后台任务计算目录大小
-/// Quickly scan the directory structure and start background size computations.
 #[tauri::command]
 async fn analyze_directory(
     path: String,
@@ -243,8 +233,8 @@ async fn analyze_directory(
     let mut current_dir_base_size: u64 = 0;
     let mut current_dir_base_allocated_size: u64 = 0;
     let mut has_subdirs = false;
-
     let mut current_dir_file_count = 0;
+
     if let Ok(entries) = fs::read_dir(path_obj) {
         for entry in entries.flatten() {
             let entry_path = entry.path();
@@ -294,8 +284,6 @@ async fn analyze_directory(
         }
     }
 
-    // 如果没有子目录，我们可以立即得出当前目录的总大小，无需启动后台任务
-    // If there are no subdirectories, we can immediately determine the total size.
     if !has_subdirs {
         let mut cache = state.size_cache.lock().unwrap();
         cache.insert(
@@ -304,8 +292,6 @@ async fn analyze_directory(
         );
     }
 
-    // 目录优先，其次按大小降序（None 视为 0），最后按名称
-    // Folders first, then size desc (None as 0), then by name
     children.sort_by(|a, b| {
         let a_is_dir = a.is_dir;
         let b_is_dir = b.is_dir;
@@ -316,7 +302,6 @@ async fn analyze_directory(
         } else {
             let size_a = a.size.unwrap_or(0);
             let size_b = b.size.unwrap_or(0);
-
             if size_a != size_b {
                 size_b.cmp(&size_a)
             } else {
@@ -336,12 +321,9 @@ async fn analyze_directory(
 
         std::thread::Builder::new()
             .name("dir_size_worker".to_string())
-            .stack_size(8 * 1024 * 1024) // 8MB 栈大小 / 8MB stack size
+            .stack_size(4 * 1024 * 1024)
             .spawn(move || {
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    compute_dir_size_recursive(root_to_compute.clone(), cache, app_handle, 0);
-                }));
-
+                run_background_scan(root_to_compute.clone(), cache, app_handle);
                 let mut in_progress = in_progress.lock().unwrap();
                 in_progress.remove(&root_to_compute);
             })
@@ -380,15 +362,12 @@ async fn analyze_directory(
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // 缓存仅用于加速
             let size_cache = Arc::new(Mutex::new(HashMap::new()));
-
             let in_progress = Arc::new(Mutex::new(HashSet::new()));
             app.manage(AppState {
                 size_cache,
                 in_progress,
             });
-
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())

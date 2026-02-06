@@ -1,6 +1,6 @@
 [package]
 name = "folder-insight"
-version = "1.0.0"
+version = "1.1.0"
 description = "可视化您的磁盘空间"
 authors = ["晓宇映辰"]
 edition = "2021"
@@ -25,4 +25,3 @@ serde_json = "1"
 walkdir = "2.5.0"
 tauri-plugin-dialog = "2.5.0"
 tauri-plugin-fs = "2.4.5"
-rayon = "1.11.0"

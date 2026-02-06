@@ -101,8 +101,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     sponsorSubtitle: '如果您觉得这个工具有帮助，欢迎赞助支持作者的开发工作。',
     close: '关闭',
     goUp: '返回上一级',
-    chartView: '环状图',
-    barChartView: '柱状图',
+    chartView: '占比分析',
   },
   en: {
     appTitle: 'Folder Insight',
@@ -137,8 +136,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     sponsorSubtitle: 'If you find this tool helpful, feel free to support the developer.',
     close: 'Close',
     goUp: 'Go Up',
-    chartView: 'Pie Chart',
-    barChartView: 'Bar Chart',
+    chartView: 'Breakdown',
   },
   ja: {
     appTitle: 'Folder Insight',
@@ -173,8 +171,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     sponsorSubtitle: 'このツールがお役に立てば、開発者のサポートをお願いします。',
     close: '閉じる',
     goUp: '上に移動',
-    chartView: 'パイチャート',
-    barChartView: '棒グラフ',
+    chartView: '内訳',
   },
   ko: {
     appTitle: 'Folder Insight',
@@ -209,8 +206,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     sponsorSubtitle: '이 도구가 도움이 되었다면 개발자를 후원해 주세요.',
     close: '닫기',
     goUp: '위로 가기',
-    chartView: '파이 차트',
-    barChartView: '막대 그래프',
+    chartView: '분포',
   },
   es: {
     appTitle: 'Folder Insight',
@@ -245,8 +241,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     sponsorSubtitle: 'Si esta herramienta te resulta útil, no dudes en apoyar al desarrollador.',
     close: 'Cerrar',
     goUp: 'Subir',
-    chartView: 'Gráfico circular',
-    barChartView: 'Gráfico de barras',
+    chartView: 'Desglose',
   },
   fr: {
     appTitle: 'Folder Insight',
@@ -281,8 +276,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     sponsorSubtitle: 'Si cet outil vous est utile, n\'hésitez pas à soutenir le développeur.',
     close: 'Fermer',
     goUp: 'Monter',
-    chartView: 'Camembert',
-    barChartView: 'Histogramme',
+    chartView: 'Répartition',
   },
   de: {
     appTitle: 'Folder Insight',
@@ -317,8 +311,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     sponsorSubtitle: 'Wenn dieses Tool hilfreich ist, unterstützen Sie gerne den Entwickler.',
     close: 'Schließen',
     goUp: 'Nach oben',
-    chartView: 'Tortendiagramm',
-    barChartView: 'Balkendiagramm',
+    chartView: 'Aufschlüsselung',
   },
 };
 

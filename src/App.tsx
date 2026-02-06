@@ -42,7 +42,6 @@ function App() {
   const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
   const [isDragActive, setIsDragActive] = useState(false);
   const [currentViewPath, setCurrentViewPath] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'pie' | 'bar'>('pie');
   const [languageMode, setLanguageMode] = useState<LanguageMode>(getInitialLanguageMode());
   const [systemLocale, setSystemLocale] = useState(detectSystemLocale());
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
@@ -688,32 +687,15 @@ function App() {
                   <span className="hidden lg:inline">{t('treemapView')}</span>
                 </button>
                 <button 
-                  onClick={() => {
-                    setView('chart');
-                    setViewMode('pie');
-                  }}
+                  onClick={() => setView('chart')}
                   title={t('chartView')}
                   className={cn(
                     "px-3 py-1.5 rounded-md flex items-center gap-2 text-sm transition-all",
-                    view === 'chart' && viewMode === 'pie' ? "bg-white dark:bg-gray-700 shadow-sm" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                    view === 'chart' ? "bg-white dark:bg-gray-700 shadow-sm" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                   )}
                 >
                   <BarChart3 size={16} />
                   <span className="hidden lg:inline">{t('chartView')}</span>
-                </button>
-                <button 
-                  onClick={() => {
-                    setView('chart');
-                    setViewMode('bar');
-                  }}
-                  title={t('barChartView')}
-                  className={cn(
-                    "px-3 py-1.5 rounded-md flex items-center gap-2 text-sm transition-all",
-                    view === 'chart' && viewMode === 'bar' ? "bg-white dark:bg-gray-700 shadow-sm" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-                  )}
-                >
-                  <BarChart3 size={16} className="rotate-90" />
-                  <span className="hidden lg:inline">{t('barChartView')}</span>
                 </button>
               </div>
             )}
@@ -911,7 +893,6 @@ function App() {
                       onDrillDown={handleChartClick}
                       onGoUp={handleGoUp}
                       canGoUp={!!currentViewPath && normalizePathForMatch(currentViewPath) !== normalizePathForMatch(data.path)}
-                      viewMode={viewMode}
                     />
                   </motion.div>
                 )}
