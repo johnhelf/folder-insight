@@ -23,10 +23,11 @@
   },
   "bundle": {
     "active": true,
+    "category": "Utility",
     "targets": "all",
     "publisher": "CN=晓宇映辰",
     "shortDescription": "High-performance folder analysis tool.",
-    "longDescription": "晓宇映辰",
+    "longDescription": "Folder Insight is a lightweight and powerful disk space analysis tool designed to answer "where has my disk space gone?" It scans selected folders in seconds and presents file size distribution through intuitive tree views and percentage charts. Find space-consuming files instantly without checking properties manually. Running entirely locally, it ensures your data privacy, making it an essential assistant for disk cleanup and space management.",
     "windows": {
       "wix": {
         "language": ["zh-CN", "en-US"]
