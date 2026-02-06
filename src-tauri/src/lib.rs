@@ -110,12 +110,35 @@ fn run_background_scan(
     let mut last_emit = Instant::now();
     let mut pending_updates: HashSet<String> = HashSet::new();
 
+    // Linux-specific: Ignore /proc, /sys, /dev, /run, /tmp
+    #[cfg(unix)]
+    let is_ignored_path = |p: &Path| -> bool {
+        let path_str = p.to_string_lossy();
+        if path_str.starts_with("/proc") || 
+           path_str.starts_with("/sys") || 
+           path_str.starts_with("/dev") ||
+           path_str.starts_with("/run") {
+            return true;
+        }
+        false
+    };
+
+    #[cfg(not(unix))]
+    let is_ignored_path = |_: &Path| -> bool { false };
+
     // 使用 WalkDir 进行深度优先遍历
     for entry in WalkDir::new(&root_path_buf)
         .into_iter()
+        .filter_entry(|e| !is_ignored_path(e.path()))
         .filter_map(|e| e.ok())
     {
         let path = entry.path();
+        
+        // Double check for root path itself if it's one of the ignored paths
+        if is_ignored_path(path) {
+            continue;
+        }
+
         let meta = match entry.metadata() {
             Ok(m) => m,
             Err(_) => {
