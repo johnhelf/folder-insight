@@ -17,3 +17,17 @@ export function cn(...inputs: any[]) {
 export const isTauri = () => {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 };
+
+/**
+ * 判断当前是否为 macOS 系统。
+ * Check if the current OS is macOS.
+ */
+export const isMacOS = () => {
+  if (typeof window === 'undefined') return false;
+  // 优先使用 userAgentData (如果支持)，否则回退到 userAgent
+  // Prefer userAgentData if available, fallback to userAgent
+  const platform = (window.navigator as any).userAgentData?.platform || window.navigator.platform;
+  const userAgent = window.navigator.userAgent;
+  
+  return /Mac/i.test(platform) || /Mac/i.test(userAgent);
+};

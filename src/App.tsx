@@ -13,7 +13,7 @@ import {
   Heart 
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { formatSize, cn, isTauri } from "./utils";
+import { formatSize, cn, isTauri, isMacOS } from "./utils";
 import {
   createTranslator,
   detectSystemLocale,
@@ -715,8 +715,8 @@ function App() {
                 aria-haspopup="menu"
                 aria-expanded={isLanguageMenuOpen}
               >
-                <span className="hidden sm:inline">{currentLanguageLabel}</span>
-                <span className="sm:hidden">{languageMode === 'auto' ? 'Auto' : languageMode.toUpperCase()}</span>
+                <span className={cn(isMacOS() ? "inline" : "hidden sm:inline")}>{currentLanguageLabel}</span>
+                <span className={cn(isMacOS() ? "hidden" : "sm:hidden")}>{languageMode === 'auto' ? 'Auto' : languageMode.toUpperCase()}</span>
               </button>
               {isLanguageMenuOpen && (
                 <div className={cn(
@@ -801,7 +801,7 @@ function App() {
 
         {data && !loading && (
           <div className="flex flex-col h-full space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0">
+            <div className={cn("grid gap-4 shrink-0", isMacOS() ? "grid-cols-3" : "grid-cols-1 md:grid-cols-3")}>
               <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
                 <div className="text-gray-500 text-sm mb-1 flex items-center gap-2">
                   <HardDrive size={14} /> {t('totalSize')}
