@@ -662,7 +662,7 @@ function App() {
             {/* 赞助作者按钮 / Sponsor button - Responsive Hide */}
             <button
               onClick={() => setIsSponsorModalOpen(true)}
-              className="hidden sm:flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-pink-600 dark:text-pink-400 hover:bg-pink-50 dark:hover:bg-pink-900/20 rounded-lg transition-colors border border-pink-200 dark:border-pink-800"
+              className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-pink-600 dark:text-pink-400 hover:bg-pink-50 dark:hover:bg-pink-900/20 rounded-lg transition-colors border border-pink-200 dark:border-pink-800"
             >
               <Heart size={16} className="fill-pink-500" />
               <span>{t('sponsor')}</span>

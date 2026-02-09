@@ -75,13 +75,13 @@ export const TreeView: React.FC<TreeViewProps> = ({
                 {node.is_dir ? t('itemsCount', { count: node.file_count.toLocaleString(numberLocale) }) : '-'}
               </span>
               <span className="w-24 text-right truncate">
-                {node.size === null ? t('calculating') : formatSize(node.size)}
-              </span>
-              <span className="w-24 text-right truncate hidden md:block">
-                {node.allocated_size === null ? t('calculating') : formatSize(node.allocated_size)}
-              </span>
-            </div>
+            {node.size === null ? t('calculating') : formatSize(node.size)}
+          </span>
+          <span className="w-24 text-right truncate">
+            {node.allocated_size === null ? t('calculating') : formatSize(node.allocated_size)}
+          </span>
         </div>
+      </div>
         <AnimatePresence initial={false}>
           {node.is_dir && isExpanded && node.children && (
             <motion.div
@@ -106,7 +106,7 @@ export const TreeView: React.FC<TreeViewProps> = ({
         <div className="flex items-center gap-4">
           <span className="w-20 text-right hidden sm:block">{t('fileCount')}</span>
           <span className="w-24 text-right">{t('size')}</span>
-          <span className="w-24 text-right hidden md:block">{t('allocatedSize')}</span>
+          <span className="w-24 text-right">{t('allocatedSize')}</span>
         </div>
       </div>
       <div className="flex-1 overflow-auto p-2">
