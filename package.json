@@ -1,7 +1,7 @@
 {
   "name": "folder-insight",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "晓宇映辰",
   "description": "可视化您的磁盘空间",
   "type": "module",
