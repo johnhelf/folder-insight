@@ -556,6 +556,14 @@ function App() {
     return items;
   }, [data, currentViewPath, numberLocale, t]);
 
+  const [debouncedChartData, setDebouncedChartData] = useState(chartData);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedChartData(chartData);
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [chartData]);
+
   /**
    * 处理图表点击下钻
    * Handle chart click drill-down
@@ -886,7 +894,7 @@ function App() {
                     className="flex-1 overflow-hidden"
                   >
                     <TreemapView 
-                      data={chartData}
+                      data={debouncedChartData}
                       t={t}
                       onDrillDown={handleChartClick}
                       onGoUp={handleGoUp}
@@ -903,7 +911,7 @@ function App() {
                     className="flex-1 overflow-hidden"
                   >
                     <ChartView 
-                      chartData={chartData}
+                      chartData={debouncedChartData}
                       t={t}
                       onDrillDown={handleChartClick}
                       onGoUp={handleGoUp}

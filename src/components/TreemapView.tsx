@@ -106,6 +106,13 @@ export const TreemapView: React.FC<TreemapViewProps> = ({
   onGoUp,
   canGoUp
 }) => {
+  const [isReady, setIsReady] = React.useState(false);
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => setIsReady(true), 100);
+    return () => clearTimeout(timer);
+  }, []);
+
   if (!data || data.length === 0) {
     return (
       <div className="h-full flex items-center justify-center text-gray-400 italic">
@@ -139,6 +146,7 @@ export const TreemapView: React.FC<TreemapViewProps> = ({
             aspectRatio={4 / 3}
             stroke="#fff"
             fill="#8884d8"
+            isAnimationActive={isReady}
             animationDuration={400}
             animationEasing="ease-out"
             content={<CustomizedContent onDrillDown={onDrillDown} />}
