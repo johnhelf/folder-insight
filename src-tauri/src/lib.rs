@@ -133,7 +133,7 @@ fn run_background_scan(
     let mut pending_updates: HashSet<String> = HashSet::new();
 
     // Linux-specific: Ignore /proc, /sys, /dev, /run, /tmp
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     let is_ignored_path = |p: &Path| -> bool {
         let path_str = p.to_string_lossy();
         if path_str.starts_with("/proc") || 
@@ -143,6 +143,23 @@ fn run_background_scan(
             return true;
         }
         false
+    };
+
+    // macOS-specific: Ignore /System/Volumes to avoid duplicates
+    #[cfg(target_os = "macos")]
+    let is_ignored_path = {
+        let filter_root = root_path_buf.clone();
+        move |p: &Path| -> bool {
+            if p.starts_with("/dev") { return true; }
+            if p.starts_with("/System/Volumes") {
+                // Only ignore if we are not scanning inside it
+                if filter_root.starts_with("/System/Volumes") {
+                    return false;
+                }
+                return true;
+            }
+            false
+        }
     };
 
     #[cfg(not(unix))]
