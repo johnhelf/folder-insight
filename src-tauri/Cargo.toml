@@ -1,6 +1,6 @@
 [package]
 name = "folder-insight"
-version = "1.1.0"
+version = "1.1.1"
 description = "可视化您的磁盘空间"
 authors = ["晓宇映辰"]
 edition = "2021"

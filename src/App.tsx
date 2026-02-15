@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback, lazy, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -10,7 +10,8 @@ import {
   Loader2, 
   HardDrive, 
   Files, 
-  Heart 
+  Heart,
+  RefreshCw
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { formatSize, cn, isTauri, isMacOS } from "./utils";
@@ -23,11 +24,15 @@ import {
   resolveLocale,
   type LanguageMode,
 } from "./i18n";
-import { FileNode, SizeUpdate } from "./types";
+import { processForECharts } from "./chartHelpers";
+import { FileNode, SizeUpdate, StructureUpdate } from "./types";
 import { SponsorModal } from "./components/SponsorModal";
 import { TreeView } from "./components/TreeView";
-import { ChartView } from "./components/ChartView";
-import { TreemapView } from "./components/TreemapView";
+// import { ChartView } from "./components/ChartView";
+// import { TreemapView } from "./components/TreemapView";
+
+const ChartView = lazy(() => import("./components/ChartView").then(module => ({ default: module.ChartView })));
+const TreemapView = lazy(() => import("./components/TreemapView").then(module => ({ default: module.TreemapView })));
 
 /**
  * 应用主组件：展示目录树与统计信息，并监听后端实时大小更新。
@@ -46,7 +51,32 @@ function App() {
   const [systemLocale, setSystemLocale] = useState(detectSystemLocale());
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isSponsorModalOpen, setIsSponsorModalOpen] = useState(false);
+  const [sizeMetric, setSizeMetric] = useState<'logical' | 'allocated'>('logical');
+  const [isReceivingUpdates, setIsReceivingUpdates] = useState(false);
+  // const [isRealtimePaused, setIsRealtimePaused] = useState(false); // 移除暂停功能 / Remove pause feature
   const pendingUpdates = useRef<Map<string, SizeUpdate>>(new Map());
+  const pendingStructureUpdates = useRef<Map<string, StructureUpdate>>(new Map());
+  const updateTimeoutRef = useRef<number | null>(null);
+  const isUpdateScheduled = useRef(false);
+  // const pausedUpdates = useRef<Map<string, SizeUpdate>>(new Map());
+  const needsSort = useRef(false);
+
+  // 定时排序逻辑：每5秒检查是否需要排序
+  // Interval sorting logic: check every 5s if sorting is needed
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      if (needsSort.current) {
+        console.log('Sorting tree...');
+        setData(prev => {
+          if (!prev) return null;
+          return sortTreeRecursive(prev);
+        });
+        needsSort.current = false;
+      }
+    }, 5000);
+
+    return () => clearInterval(intervalId);
+  }, []);
 
   // 赞助弹窗自动弹出逻辑 / Auto-show sponsor modal logic
   useEffect(() => {
@@ -99,10 +129,24 @@ function App() {
   }, []);
 
   /**
-   * 用于事件匹配的路径标准化：忽略大小写与分隔符差异。
-   * Normalize path for event matching: ignore case and slash differences.
+   * 用于事件匹配的路径标准化：忽略大小写与分隔符差异，去除末尾斜杠。
+   * Normalize path for event matching: ignore case and slash differences, remove trailing slash.
    */
-  const normalizePathForMatch = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+  const normalizePathForMatch = (p: string) => {
+    if (!p) return "";
+    let normalized = p.replace(/\\/g, '/').toLowerCase();
+    // 去除末尾斜杠（除非是根路径如 "c:/" 或 "/"）
+    // Remove trailing slash (unless it is root "c:/" or "/")
+    if (normalized.length > 1 && normalized.endsWith('/')) {
+        // 特殊情况：windows 盘符 "c:/" -> "c:"，或者保留 "c:/"？
+        // 如果 Rust 端的 normalize_path_string 对于 "C:\" 返回 "C:\"，那么这里变成 "c:/"
+        // 如果 Rust 端对于 "C:" 返回 "C:"，那么这里变成 "c:"
+        // 为了统一，我们去掉末尾斜杠。
+        // For consistency, remove trailing slash.
+        normalized = normalized.slice(0, -1);
+    }
+    return normalized;
+  };
 
   /**
    * 排序子节点：目录优先，其次大小降序（null 视为 -1，排在最后），最后按名称。
@@ -123,40 +167,204 @@ function App() {
   };
 
   /**
-   * 将后端事件更新应用到目录树中，尽量保持未变化节点的引用稳定。
-   * Apply backend update event to the tree while keeping unchanged node references stable.
+   * 递归排序整个树
+   * Recursively sort the entire tree
    */
-  const applySizeUpdate = (root: FileNode, update: SizeUpdate): FileNode => {
-    const targetPath = normalizePathForMatch(update.path);
+  const sortTreeRecursive = (node: FileNode): FileNode => {
+    if (!node.children) return node;
+    const newChildren = node.children.map(sortTreeRecursive);
+    sortChildren(newChildren);
+    return { ...node, children: newChildren };
+  };
 
-    const updateRecursively = (node: FileNode): FileNode => {
-      if (normalizePathForMatch(node.path) === targetPath) {
-        return {
-          ...node,
-          size: update.size,
-          allocated_size: update.allocated_size,
-          is_restricted: update.is_restricted,
-          file_count: update.file_count,
-        };
-      }
+  /**
+   * 在树中按路径查找节点。
+   * Find a node in the tree by its path.
+   */
+  const findNodeByPath = (root: FileNode, path: string): FileNode | null => {
+    if (normalizePathForMatch(root.path) === normalizePathForMatch(path)) return root;
+    if (!root.children) return null;
 
-      if (!node.children) return node;
+    for (const child of root.children) {
+      const found = findNodeByPath(child, path);
+      if (found) return found;
+    }
+    return null;
+  };
 
-      let changed = false;
-      const newChildren = node.children.map(child => {
-        const next = updateRecursively(child);
-        if (next !== child) changed = true;
-        return next;
+  /**
+   * 替换指定路径节点的 children、size 和 file_count，并尽量避免无意义的全树拷贝。
+   * Replace children, size, and file_count at the target path while avoiding unnecessary full-tree cloning.
+   */
+  const updateNodeAtPath = (
+    root: FileNode, 
+    path: string, 
+    update: Partial<FileNode>
+  ): FileNode => {
+    if (normalizePathForMatch(root.path) === normalizePathForMatch(path)) {
+      return { ...root, ...update };
+    }
+    if (!root.children) return root;
+
+    let changed = false;
+    const newChildren = root.children.map(child => {
+      const next = updateNodeAtPath(child, path, update);
+      if (next !== child) changed = true;
+      return next;
+    });
+
+    if (!changed) return root;
+    return { ...root, children: newChildren };
+  };
+
+  const getNodeMetricSize = (node: FileNode) => {
+    return sizeMetric === 'allocated' ? node.allocated_size : node.size;
+  };
+
+  const getRealtimeSummary = (node: FileNode) => {
+    const children = node.children ?? [];
+    const partialSize = children.reduce((acc, child) => acc + (getNodeMetricSize(child) ?? 0), 0);
+    const partialFileCount = children.reduce((acc, child) => acc + (child.file_count ?? 0), 0);
+    const hasPending = children.some(
+      child => child.is_dir && getNodeMetricSize(child) === null
+    );
+
+    return { partialSize, partialFileCount, hasPending };
+  };
+
+  /**
+   * 批量应用更新（结构和大小），通过单次遍历树实现 O(N) 复杂度。
+   * Batch apply updates (structure and size) with single tree traversal O(N).
+   * 优化：只遍历受影响的路径 / Optimization: Only traverse affected paths
+   */
+  const applyBatchUpdates = (
+    node: FileNode,
+    structureUpdates: Map<string, StructureUpdate>,
+    sizeUpdates: Map<string, SizeUpdate>,
+    affectedPaths: Set<string>,
+    _isRoot: boolean = false
+  ): FileNode => {
+    const normalizedPath = normalizePathForMatch(node.path);
+    
+    // 暂时移除路径过滤优化，以确保所有更新都能被应用（解决刷新后只有2层的问题）
+    // Temporarily remove path filtering optimization to ensure all updates are applied
+    // if (!isRoot && !affectedPaths.has(normalizedPath)) {
+    //   return node;
+    // }
+
+    // Debugging: Log path matching for root or first level children to verify normalization
+    // 调试：记录根节点或第一层子节点的路径匹配情况，验证标准化逻辑
+    if (_isRoot && structureUpdates.size > 0) {
+        console.log(`[applyBatchUpdates] Root path: ${normalizedPath}. Pending structure updates: ${structureUpdates.size}`);
+        // Log first few keys in updates
+        const keys = Array.from(structureUpdates.keys()).slice(0, 3);
+        console.log(`[applyBatchUpdates] Sample keys: ${JSON.stringify(keys)}`);
+    }
+
+    let newNode = node;
+    
+    // 1. 应用结构更新 / Apply structure update
+    if (structureUpdates.has(normalizedPath)) {
+      const update = structureUpdates.get(normalizedPath)!;
+      // Ensure children are not null if update provides empty array
+      const newChildren = update.children || [];
+
+      // We need to merge newChildren with existing children to preserve calculated sizes/counts of sub-directories
+      // otherwise a structure update resets everything to 0/null until next size update arrives.
+      const prevChildrenMap = new Map((newNode.children || []).map(c => [normalizePathForMatch(c.path), c]));
+
+      const mergedChildren = newChildren.map(newChild => {
+        const prevChild = prevChildrenMap.get(normalizePathForMatch(newChild.path));
+        if (prevChild) {
+          // If the child already exists, preserve its children and stats
+          // Structure updates from backend often have empty stats for directories (size: null, etc.)
+          // We must not overwrite existing calculated stats with null/empty values.
+          return {
+            ...newChild,
+            // Preserve deep structure
+            // 修复：防止空数组覆盖已有的子节点数据
+            // Fix: prevent empty array from overwriting existing children data
+            children: (newChild.children && newChild.children.length > 0) ? newChild.children : prevChild.children,
+            // Preserve calculated stats if newChild doesn't have them (e.g. it's a directory entry from a structure scan)
+            size: newChild.size ?? prevChild.size,
+            allocated_size: newChild.allocated_size ?? prevChild.allocated_size,
+            // Preserve file_count for directories (Rust sends 0 for dirs in structure update)
+            file_count: (newChild.is_dir && !newChild.file_count) ? prevChild.file_count : newChild.file_count,
+            is_restricted: prevChild.is_restricted || newChild.is_restricted,
+          };
+        }
+        return newChild;
       });
 
-      if (!changed) return node;
+      newNode = { ...newNode, children: mergedChildren };
+    }
 
-      sortChildren(newChildren);
-      return { ...node, children: newChildren };
-    };
+    // 2. 应用大小更新 / Apply size update
+    if (sizeUpdates.has(normalizedPath)) {
+      const update = sizeUpdates.get(normalizedPath)!;
+      newNode = {
+        ...newNode,
+        size: update.size,
+        allocated_size: update.allocated_size,
+        is_restricted: update.is_restricted,
+        file_count: update.file_count,
+      };
+    }
 
-    return updateRecursively(root);
+    // 3. 递归处理子节点 / Recurse into children
+    if (!newNode.children) return newNode;
+
+    let childrenChanged = false;
+    const newChildren = newNode.children.map(child => {
+      // 这里的 affectedPaths 参数已经不再被使用，但为了兼容性保留
+      // affectedPaths parameter is unused now but kept for compatibility
+      const newChild = applyBatchUpdates(child, structureUpdates, sizeUpdates, affectedPaths);
+      if (newChild !== child) childrenChanged = true;
+      return newChild;
+    });
+
+    if (childrenChanged || newNode !== node) {
+      return { ...newNode, children: newChildren };
+    }
+
+    return node;
   };
+
+  /**
+   * 生成所有受影响路径及其祖先路径的集合
+   * Generate set of all affected paths and their ancestors
+   */
+  // const getAffectedPaths = (updatesList: Map<string, any>[]): Set<string> => {
+  //   const affected = new Set<string>();
+  //   updatesList.forEach(map => {
+  //     for (const rawPath of map.keys()) {
+  //       // 确保使用统一的标准化逻辑
+  //       // Ensure consistent normalization
+  //       let current = normalizePathForMatch(rawPath);
+  //       
+  //       affected.add(current);
+  //       
+  //       // 向上遍历添加所有祖先 / Traverse up to add all ancestors
+  //       while (true) {
+  //         const lastSlash = current.lastIndexOf('/');
+  //         if (lastSlash === -1) break;
+  //         
+  //         current = current.substring(0, lastSlash);
+  //         
+  //         // 避免添加空字符串（如果路径是 /foo，substring(0,0) 是空）
+  //         // Avoid adding empty string
+  //         if (current.length > 0) {
+  //           affected.add(current);
+  //         } else {
+  //           // 如果是根路径 "/"，可能需要根据具体逻辑处理，但在 Windows 上通常是 "c:"
+  //           // If root path "/", handled differently, but on Windows usually "c:"
+  //           break; 
+  //         }
+  //       }
+  //     }
+  //   });
+  //   return affected;
+  // };
 
   /**
    * 统一触发分析流程：清理状态并调用后端 analyze_directory。
@@ -180,12 +388,25 @@ function App() {
       // 应用加载期间积累的所有更新
       // Apply all updates accumulated during loading
       let updatedResult = result;
-      pendingUpdates.current.forEach((update) => {
-        updatedResult = applySizeUpdate(updatedResult, update);
-      });
+      
+      const sUpdates = new Map(pendingStructureUpdates.current);
+      const zUpdates = new Map(pendingUpdates.current);
+      
+      // 使用 applyBatchUpdates 批量处理，确保正确合并
+      // Use applyBatchUpdates for batch processing to ensure correct merging
+      if (sUpdates.size > 0 || zUpdates.size > 0) {
+        // const affected = getAffectedPaths([sUpdates, zUpdates]);
+        // console.log(`[analyzePath] Applying updates. Affected paths: ${affected.size}`);
+        console.log(`[analyzePath] Applying updates. Structure: ${sUpdates.size}, Size: ${zUpdates.size}`);
+        updatedResult = applyBatchUpdates(updatedResult, sUpdates, zUpdates, new Set(), true);
+      } else {
+        console.log(`[analyzePath] No pending updates to apply.`);
+      }
+      
+      pendingStructureUpdates.current.clear();
       pendingUpdates.current.clear();
 
-      setData(updatedResult);
+      setData(sortTreeRecursive(updatedResult));
       setCurrentViewPath(updatedResult.path);
       setExpandedPaths(new Set([result.path as string]));
     } catch (err) {
@@ -242,29 +463,102 @@ function App() {
     return () => window.removeEventListener('click', handleClick);
   }, []);
 
-  // 监听后台大小更新事件
+
   useEffect(() => {
     if (!isTauri()) return;
 
-    const unlistenPromise = listen<SizeUpdate>('folder-size-updated', (event) => {
+    // 调度更新：如果这是第一个待处理的更新（无论是结构还是大小），则设置定时器
+    // Schedule update: if this is the first pending update (structure or size), set timeout
+    const scheduleUpdate = () => {
+      if (isUpdateScheduled.current) return;
+      isUpdateScheduled.current = true;
+
+      // 每 500ms 更新一次，避免界面过于频繁跳动但保持响应感
+      // Update every 500ms to avoid too much flickering but keep it responsive
+      setTimeout(() => {
+        isUpdateScheduled.current = false;
+        
+        setData((prev) => {
+          // 如果还没有数据（例如正在初始加载），则不处理更新，保留在 pendingUpdates 中
+          // If no data (e.g. initial loading), skip update processing, keep in pendingUpdates
+          if (!prev) {
+            return null;
+          }
+
+          // IMPORTANT: Read refs inside setData to ensure we handle current state
+          // 创建更新 Map 的快照
+          const sUpdates = new Map(pendingStructureUpdates.current);
+          const zUpdates = new Map(pendingUpdates.current);
+          
+          if (sUpdates.size === 0 && zUpdates.size === 0) {
+            return prev;
+          }
+
+          // 清空引用，以便接收新更新
+          // Clear refs only when we are about to apply them
+          pendingStructureUpdates.current.clear();
+          pendingUpdates.current.clear();
+
+          console.log(`Processing batch updates: ${sUpdates.size} structure, ${zUpdates.size} size`);
+          
+          // 优化：先检查更新是否在当前树的范围内，避免无效遍历
+          // Optimization: Check if updates are within current tree scope to avoid invalid traversal
+          // (Simple optimization: just check if we have any updates matching the current tree root path prefix?)
+          // For now, keep full traversal but ensure it is correct.
+          
+          // const affected = getAffectedPaths([sUpdates, zUpdates]);
+          // console.log(`[scheduleUpdate] Applying batch updates. Affected: ${affected.size}, Root: ${prev.path}`);
+          console.log(`[scheduleUpdate] Applying batch updates. Structure: ${sUpdates.size}, Size: ${zUpdates.size}`);
+          // 单次遍历应用所有更新
+          // Single pass application
+          const updatedTree = applyBatchUpdates(prev, sUpdates, zUpdates, new Set(), true);
+          
+          // 只有在数据真正变化时才重新排序
+          // Only resort if data changed (which it did if we are here)
+          return sortTreeRecursive(updatedTree); 
+        });
+      }, 500);
+    };
+
+    const markUpdating = () => {
+      setIsReceivingUpdates(true);
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
+      }
+      updateTimeoutRef.current = setTimeout(() => {
+        setIsReceivingUpdates(false);
+        updateTimeoutRef.current = null;
+      }, 2000);
+    };
+
+    const unlistenSizePromise = listen<SizeUpdate>('folder-size-updated', (event) => {
+      markUpdating();
       const update = event.payload;
-      const normalizedPath = normalizePathForMatch(update.path);
-      
-      setData(prev => {
-        if (!prev) {
-          // 如果数据还在加载中，先存入待处理队列
-          // If data is loading, store in pending queue
-          pendingUpdates.current.set(normalizedPath, update);
-          return null;
-        }
-        return applySizeUpdate(prev, update);
-      });
+      // 使用标准化路径作为 Key，以便 applyBatchUpdates 中能正确匹配
+      // Use normalized path as Key for correct matching in applyBatchUpdates
+      pendingUpdates.current.set(normalizePathForMatch(update.path), update);
+      needsSort.current = true;
+      scheduleUpdate();
+    });
+
+    const unlistenStructurePromise = listen<StructureUpdate>('folder-structure-updated', (event) => {
+      markUpdating();
+      const update = event.payload;
+      // 使用标准化路径作为 Key
+      // Use normalized path as Key
+      pendingStructureUpdates.current.set(normalizePathForMatch(update.path), update);
+      needsSort.current = true;
+      scheduleUpdate();
     });
 
     return () => {
-      unlistenPromise.then(unlisten => unlisten());
+      unlistenSizePromise.then(unlisten => unlisten());
+      unlistenStructurePromise.then(unlisten => unlisten());
     };
-  }, []);
+  }, []); // 移除 isRealtimePaused 依赖 / Remove dependency
+
+  // 移除处理暂停更新的 effect
+  // Remove effect for paused updates
 
   /**
    * 监听系统文件拖拽事件（Tauri）：拖拽文件夹到窗口后直接开始分析。
@@ -332,60 +626,6 @@ function App() {
     };
   }, [analyzePath]);
 
-  /**
-   * 在树中按路径查找节点。
-   * Find a node in the tree by its path.
-   */
-  const findNodeByPath = (root: FileNode, path: string): FileNode | null => {
-    if (normalizePathForMatch(root.path) === normalizePathForMatch(path)) return root;
-    if (!root.children) return null;
-
-    for (const child of root.children) {
-      const found = findNodeByPath(child, path);
-      if (found) return found;
-    }
-    return null;
-  };
-
-  /**
-   * 替换指定路径节点的 children、size 和 file_count，并尽量避免无意义的全树拷贝。
-   * Replace children, size, and file_count at the target path while avoiding unnecessary full-tree cloning.
-   */
-  const updateNodeAtPath = (
-    root: FileNode, 
-    path: string, 
-    update: Partial<FileNode>
-  ): FileNode => {
-    if (normalizePathForMatch(root.path) === normalizePathForMatch(path)) {
-      return { ...root, ...update };
-    }
-    if (!root.children) return root;
-
-    let changed = false;
-    const newChildren = root.children.map(child => {
-      const next = updateNodeAtPath(child, path, update);
-      if (next !== child) changed = true;
-      return next;
-    });
-
-    if (!changed) return root;
-    return { ...root, children: newChildren };
-  };
-
-  /**
-   * 计算顶部汇总的实时统计：
-   * - 根节点 size 未回传时，使用已完成子项的累加值作为“当前进度”
-   * Realtime summary for header:
-   * - When root size is not ready, use accumulated completed children as progress.
-   */
-  const getRealtimeSummary = (node: FileNode) => {
-    const children = node.children ?? [];
-    const partialSize = children.reduce((acc, child) => acc + (child.size ?? 0), 0);
-    const partialFileCount = children.reduce((acc, child) => acc + (child.file_count ?? 0), 0);
-    const hasPending = children.some(child => child.is_dir && child.size === null);
-
-    return { partialSize, partialFileCount, hasPending };
-  };
 
   /**
    * 选择文件夹并调用后端分析入口。
@@ -407,6 +647,54 @@ function App() {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleRefresh = async () => {
+    if (!isTauri() || !data) return;
+    const targetPath = currentViewPath ?? data.path;
+    try {
+      setLoading(true);
+      const result = await invoke<FileNode>("analyze_directory", { path: targetPath });
+
+      // 应用加载期间积累的所有更新，避免被浅层扫描覆盖
+      // Apply all updates accumulated during loading to avoid overwriting with shallow scan
+      let updatedResult = result;
+      const sUpdates = new Map(pendingStructureUpdates.current);
+      const zUpdates = new Map(pendingUpdates.current);
+      
+      console.log(`[handleRefresh] Structure updates: ${sUpdates.size}, Size updates: ${zUpdates.size}`);
+      if (sUpdates.size > 0 || zUpdates.size > 0) {
+        // const affected = getAffectedPaths([sUpdates, zUpdates]);
+        updatedResult = applyBatchUpdates(updatedResult, sUpdates, zUpdates, new Set(), true);
+      }
+      
+      // 清理已应用的更新
+      // Clear applied updates
+      pendingStructureUpdates.current.clear();
+      pendingUpdates.current.clear();
+
+      setData(prev => {
+        if (!prev) return updatedResult;
+        
+        // 如果是根目录刷新，直接替换整个树
+        // If refreshing root, replace the whole tree
+        if (normalizePathForMatch(targetPath) === normalizePathForMatch(prev.path)) {
+            return sortTreeRecursive(updatedResult);
+        }
+
+        // 如果是子目录刷新，替换对应子树
+        // If refreshing subdirectory, replace corresponding subtree
+        return sortTreeRecursive(updateNodeAtPath(prev, targetPath, {
+            ...updatedResult,
+            // 确保保留原有的父级关联（虽然 updateNodeAtPath 会处理，但为了保险）
+            // Ensure parent association is kept (handled by updateNodeAtPath but to be safe)
+        }));
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -441,19 +729,30 @@ function App() {
             // 应用此节点加载期间可能积累的更新
             // Apply updates that might have accumulated during this node's loading
             let updatedNode = result;
-            pendingUpdates.current.forEach((update) => {
-              updatedNode = applySizeUpdate(updatedNode, update);
-            });
+            
+            // 使用 applyBatchUpdates 替代已删除的 applySizeUpdate
+            // Use applyBatchUpdates instead of deleted applySizeUpdate
+            const sUpdates = new Map<string, StructureUpdate>();
+            const zUpdates = new Map(pendingUpdates.current);
+            // 只需要当前节点及其子节点的更新，但 applyBatchUpdates 会处理过滤
+            // Just need updates for current node and children, applyBatchUpdates handles filtering
+            
+            if (zUpdates.size > 0) {
+                 // const affected = getAffectedPaths([zUpdates]);
+                 updatedNode = applyBatchUpdates(updatedNode, sUpdates, zUpdates, new Set(), true);
+            }
+
             // 注意：这里不清理 pendingUpdates，因为其他路径可能还需要它
             // Note: Don't clear all pendingUpdates here as other paths might still need them
             // 只移除当前路径相关的（如果有的话）
             pendingUpdates.current.delete(normalizePathForMatch(path));
 
-            return updateNodeAtPath(prev, path, {
+            const newTree = updateNodeAtPath(prev, path, {
               children: updatedNode.children || [],
               size: updatedNode.size !== null ? updatedNode.size : findNodeByPath(prev, path)?.size || null,
               file_count: updatedNode.size !== null ? updatedNode.file_count : findNodeByPath(prev, path)?.file_count || 0
             });
+            return sortTreeRecursive(newTree);
           });
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -500,107 +799,142 @@ function App() {
   };
 
   /**
-   * 统计图数据：仅展示当前视图路径下的计算完成子项，并将小项聚合到“其他”。
-   * Chart dataset: only includes computed children of current view path; groups small items into "Other".
+   * 统计图数据：生成 ECharts 需要的树形结构
+   * Chart dataset: generate tree structure for ECharts
    */
-  const chartData = useMemo(() => {
+  const eChartsData = useMemo(() => {
+    if (!data) return null;
+    const targetNode = currentViewPath ? findNodeByPath(data, currentViewPath) : data;
+    if (!targetNode) return null;
+
+    // 根据当前视图生成 ECharts 数据，聚合阈值设为 0.5% 以显示更多细节
+    // Generate ECharts data, threshold 0.5% to show more details
+    // 增加递归深度到 7，确保环形图和矩形树图都能获得足够深的数据
+    // Increase recursion depth to 7
+    return processForECharts(targetNode, 7, 0.001);
+  }, [data, currentViewPath]);
+
+  const categoryData = useMemo(() => {
     if (!data) return [];
 
-    // 根据 currentViewPath 找到对应节点
-    const targetNode = currentViewPath ? findNodeByPath(data, currentViewPath) : data;
-    if (!targetNode?.children) return [];
+    const systemExts = new Set(['sys', 'dll', 'drv', 'ocx']);
+    const softwareExts = new Set(['exe', 'msi', 'app', 'appx', 'apk', 'deb', 'rpm', 'bat', 'cmd', 'ps1', 'sh']);
+    const gameExts = new Set(['pak', 'unity3d', 'umap', 'ubulk', 'uexp', 'wad', 'obb']);
+    const videoExts = new Set(['mp4', 'mkv', 'avi', 'mov', 'flv', 'wmv', 'webm', 'm4v']);
+    const audioExts = new Set(['mp3', 'flac', 'aac', 'wav', 'ogg', 'm4a', 'wma']);
+    const imageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'ico']);
+    const documentExts = new Set(['pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt', 'md', 'rtf', 'csv']);
 
-    const MAX_SLICES = 20;
-    const OTHER_RATIO = 0.01;
+    const totals = new Map<string, number>();
 
-    const childrenWithSize = targetNode.children.filter(child => child.size !== null);
-    const totalSize = childrenWithSize.reduce((acc, child) => acc + (child.size || 0), 0);
-    if (totalSize === 0) return [];
+    const detectCategory = (name: string) => {
+      const ext = name.toLowerCase().split('.').pop() || '';
+      if (systemExts.has(ext)) return 'system';
+      if (softwareExts.has(ext)) return 'software';
+      if (gameExts.has(ext)) return 'game';
+      if (videoExts.has(ext)) return 'video';
+      if (audioExts.has(ext)) return 'audio';
+      if (imageExts.has(ext)) return 'image';
+      if (documentExts.has(ext)) return 'document';
+      return 'other';
+    };
 
-    const threshold = totalSize * OTHER_RATIO;
-    const sortedChildren = [...childrenWithSize].sort((a, b) => (b.size || 0) - (a.size || 0));
-
-    const items: { name: string; value: number; formattedSize: string; path: string; isDir: boolean }[] = [];
-    let otherSize = 0;
-    let otherCount = 0;
-
-    for (const child of sortedChildren) {
-      const size = child.size || 0;
-      const shouldBeOther = size < threshold || items.length >= MAX_SLICES;
-
-      if (shouldBeOther) {
-        otherSize += size;
-        otherCount += 1;
-        continue;
+    const accumulate = (node: FileNode) => {
+      if (node.is_dir) {
+        if (node.children) {
+          node.children.forEach(child => accumulate(child));
+        }
+        return;
       }
+      const size = getNodeMetricSize(node);
+      if (size === null) return;
+      const key = detectCategory(node.name);
+      totals.set(key, (totals.get(key) || 0) + size);
+    };
 
-      items.push({
-        name: child.name,
-        value: size,
-        formattedSize: formatSize(size),
-        path: child.path,
-        isDir: child.is_dir,
-      });
-    }
+    accumulate(data);
 
-    if (otherSize > 0 || otherCount > 0) {
-      items.push({
-        name: t('otherItems', { count: otherCount.toLocaleString(numberLocale) }),
-        value: otherSize,
-        formattedSize: formatSize(otherSize),
-        path: '',
-        isDir: false,
-      });
-    }
+    const labelMap: Record<string, string> = {
+      system: t('categorySystem'),
+      software: t('categorySoftware'),
+      game: t('categoryGame'),
+      video: t('categoryVideo'),
+      audio: t('categoryAudio'),
+      image: t('categoryImage'),
+      document: t('categoryDocument'),
+      other: t('categoryOther'),
+    };
+
+    const items = Object.entries(labelMap)
+      .map(([key, label]) => {
+        const value = totals.get(key) || 0;
+        return {
+          name: label,
+          value,
+          formattedSize: formatSize(value),
+          path: '',
+          isDir: false,
+        };
+      })
+      .filter(item => item.value > 0)
+      .sort((a, b) => b.value - a.value);
 
     return items;
-  }, [data, currentViewPath, numberLocale, t]);
+  }, [data, sizeMetric, t]);
 
-  const [debouncedChartData, setDebouncedChartData] = useState(chartData);
+  const [debouncedEChartsData, setDebouncedEChartsData] = useState(eChartsData);
   useEffect(() => {
+    // 缩短 Treemap 的防抖时间以提高下钻响应速度
+    // Reduce debounce time for Treemap to improve drill-down responsiveness
+    const delay = view === 'treemap' ? 100 : 200;
     const timer = setTimeout(() => {
-      setDebouncedChartData(chartData);
-    }, 1000);
+      setDebouncedEChartsData(eChartsData);
+    }, delay);
     return () => clearTimeout(timer);
-  }, [chartData]);
+  }, [eChartsData, view]);
 
   /**
    * 处理图表点击下钻
    * Handle chart click drill-down
    */
-  const handleChartClick = async (item: any) => {
+  const handleChartDrillDown = async (path: string) => {
     if (!isTauri()) return;
-    if (item && item.isDir && item.path) {
-      // 检查是否需要加载子目录数据
-      // Check if we need to load subdirectory data
-      const node = findNodeByPath(data!, item.path);
-      if (node && node.is_dir && !node.children) {
-        setLoading(true);
-        try {
-          const result = await invoke<FileNode>("analyze_directory", { path: item.path });
+    
+    // 检查是否需要加载子目录数据
+    const node = findNodeByPath(data!, path);
+    if (node && node.is_dir && !node.children) {
+      setLoading(true);
+      try {
+        const result = await invoke<FileNode>("analyze_directory", { path });
+        
+        setData(prev => {
+          if (!prev) return null;
+          let updatedNode = result;
           
-          setData(prev => {
-            if (!prev) return null;
-            let updatedNode = result;
-            pendingUpdates.current.forEach((update) => {
-              updatedNode = applySizeUpdate(updatedNode, update);
-            });
-            pendingUpdates.current.delete(normalizePathForMatch(item.path));
+          // 使用 applyBatchUpdates 替代 applySizeUpdate
+          // Use applyBatchUpdates instead of applySizeUpdate
+          const sUpdates = new Map<string, StructureUpdate>();
+          const zUpdates = new Map(pendingUpdates.current);
+          if (zUpdates.size > 0) {
+              // const affected = getAffectedPaths([zUpdates]);
+              updatedNode = applyBatchUpdates(updatedNode, sUpdates, zUpdates, new Set(), true);
+          }
+          
+          pendingUpdates.current.delete(normalizePathForMatch(path));
 
-            return updateNodeAtPath(prev, item.path, {
-              children: updatedNode.children || [],
-              size: updatedNode.size !== null ? updatedNode.size : findNodeByPath(prev, item.path)?.size || null,
-              file_count: updatedNode.size !== null ? updatedNode.file_count : findNodeByPath(prev, item.path)?.file_count || 0
-            });
+          return updateNodeAtPath(prev, path, {
+            children: updatedNode.children || [],
+            size: updatedNode.size !== null ? updatedNode.size : findNodeByPath(prev, path)?.size || null,
+            file_count: updatedNode.size !== null ? updatedNode.file_count : findNodeByPath(prev, path)?.file_count || 0
           });
-        } catch (err) {
-          console.error(`Error loading ${item.path}:`, err);
-        } finally {
-          setLoading(false);
-        }
+        });
+      } catch (err) {
+        console.error(`Error loading ${path}:`, err);
+      } finally {
+        setLoading(false);
       }
-      setCurrentViewPath(item.path);
     }
+    setCurrentViewPath(path);
   };
 
   /**
@@ -756,6 +1090,18 @@ function App() {
                 </div>
               )}
             </div>
+            {data && (
+              <>
+                <button
+                  onClick={handleRefresh}
+                  disabled={loading}
+                  title={t('refreshStats')}
+                  className="bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 p-2 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={18} />
+                </button>
+              </>
+            )}
             <button 
               onClick={handleSelectFolder}
               disabled={loading}
@@ -809,55 +1155,83 @@ function App() {
 
         {data && !loading && (
           <div className="flex flex-col h-full space-y-4">
-            <div className={cn("grid gap-4 shrink-0", isMacOS() ? "grid-cols-3" : "grid-cols-1 md:grid-cols-3")}>
-              <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
-                <div className="text-gray-500 text-sm mb-1 flex items-center gap-2">
-                  <HardDrive size={14} /> {t('totalSize')}
+            <div className={cn("grid gap-4 shrink-0", isMacOS() ? "grid-cols-3" : "grid-cols-1 md:grid-cols-[1.2fr_1fr_0.8fr]")}>
+              <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm flex flex-col justify-between">
+                <div className="text-gray-500 text-xs mb-1 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <HardDrive size={14} /> <span className="whitespace-nowrap">{t('totalSize')}</span>
+                  </div>
+                  <div className="flex items-center bg-gray-100 dark:bg-gray-700 rounded-md p-0.5 text-[10px] shrink-0">
+                    <button
+                      onClick={() => setSizeMetric('logical')}
+                      className={cn(
+                        "px-1.5 py-0.5 rounded-md transition-colors whitespace-nowrap",
+                        sizeMetric === 'logical'
+                          ? "bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 shadow-sm"
+                          : "text-gray-500 dark:text-gray-300"
+                      )}
+                    >
+                      {t('metricLogical')}
+                    </button>
+                    <button
+                      onClick={() => setSizeMetric('allocated')}
+                      className={cn(
+                        "px-1.5 py-0.5 rounded-md transition-colors whitespace-nowrap",
+                        sizeMetric === 'allocated'
+                          ? "bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 shadow-sm"
+                          : "text-gray-500 dark:text-gray-300"
+                      )}
+                    >
+                      {t('metricAllocated')}
+                    </button>
+                  </div>
                 </div>
-                <div className="text-2xl font-bold">
+                <div className="text-xl font-bold">
                   {(() => {
                     const { partialSize, hasPending } = getRealtimeSummary(data);
-                    const isCalculating = hasPending;
-                    if (data.size === null) {
+                    const isCalculating = hasPending || isReceivingUpdates;
+                    const metricValue = sizeMetric === 'allocated' ? data.allocated_size : data.size;
+                    if (metricValue === null) {
                       return (
                         <>
                           {formatSize(partialSize)}
-                          {isCalculating && <span className="text-base font-normal text-gray-500 ml-2">{t('calculatingInline')}</span>}
+                          {isCalculating && <span className="text-sm font-normal text-gray-500 ml-2">{t('calculatingInline')}</span>}
                         </>
                       );
                     }
                     return (
                       <>
-                        {formatSize(data.size)}
-                        {isCalculating && <span className="text-base font-normal text-gray-500 ml-2">{t('calculatingInline')}</span>}
+                        {formatSize(metricValue)}
+                        {isCalculating && <span className="text-sm font-normal text-gray-500 ml-2">{t('calculatingInline')}</span>}
                       </>
                     );
                   })()}
                 </div>
               </div>
-              <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
-                <div className="text-gray-500 text-sm mb-1 flex items-center gap-2">
+              <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm flex flex-col justify-between">
+                <div className="text-gray-500 text-xs mb-1 flex items-center gap-1.5">
                   <Files size={14} /> {t('totalFiles')}
                 </div>
-                <div className="text-2xl font-bold">
+                <div className="text-xl font-bold">
                   {(() => {
                     const { partialFileCount, hasPending } = getRealtimeSummary(data);
-                    const isCalculating = hasPending;
-                    const fileCountValue = data.size === null ? partialFileCount : data.file_count;
+                    const isCalculating = hasPending || isReceivingUpdates;
+                    const metricValue = sizeMetric === 'allocated' ? data.allocated_size : data.size;
+                    const fileCountValue = metricValue === null ? partialFileCount : data.file_count;
                     return (
                       <>
                         {fileCountValue.toLocaleString(numberLocale)}
-                        {isCalculating && <span className="text-base font-normal text-gray-500 ml-2">{t('calculatingInline')}</span>}
+                        {isCalculating && <span className="text-sm font-normal text-gray-500 ml-2">{t('calculatingInline')}</span>}
                       </>
                     );
                   })()}
                 </div>
               </div>
-              <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
-                <div className="text-gray-500 text-sm mb-1 flex items-center gap-2">
+              <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm flex flex-col justify-between">
+                <div className="text-gray-500 text-xs mb-1 flex items-center gap-1.5">
                   <Folder size={14} /> {t('rootDirectory')}
                 </div>
-                <div className="text-lg font-semibold truncate" title={data.path as string}>
+                <div className="text-base font-semibold truncate" title={data.path as string}>
                   {data.name}
                 </div>
               </div>
@@ -893,13 +1267,15 @@ function App() {
                     transition={{ duration: 0.2 }}
                     className="flex-1 overflow-hidden"
                   >
-                    <TreemapView 
-                      data={debouncedChartData}
-                      t={t}
-                      onDrillDown={handleChartClick}
-                      onGoUp={handleGoUp}
-                      canGoUp={!!currentViewPath && normalizePathForMatch(currentViewPath) !== normalizePathForMatch(data.path)}
-                    />
+                    <Suspense fallback={<div className="h-full w-full flex items-center justify-center"><Loader2 className="animate-spin text-gray-400" /></div>}>
+                      <TreemapView 
+                        data={debouncedEChartsData}
+                        t={t}
+                        onDrillDown={handleChartDrillDown}
+                        onGoUp={handleGoUp}
+                        canGoUp={!!currentViewPath && normalizePathForMatch(currentViewPath) !== normalizePathForMatch(data.path)}
+                      />
+                    </Suspense>
                   </motion.div>
                 ) : (
                   <motion.div
@@ -910,13 +1286,16 @@ function App() {
                     transition={{ duration: 0.2 }}
                     className="flex-1 overflow-hidden"
                   >
-                    <ChartView 
-                      chartData={debouncedChartData}
-                      t={t}
-                      onDrillDown={handleChartClick}
-                      onGoUp={handleGoUp}
-                      canGoUp={!!currentViewPath && normalizePathForMatch(currentViewPath) !== normalizePathForMatch(data.path)}
-                    />
+                    <Suspense fallback={<div className="h-full w-full flex items-center justify-center"><Loader2 className="animate-spin text-gray-400" /></div>}>
+                      <ChartView 
+                        chartData={debouncedEChartsData}
+                        categoryData={categoryData}
+                        t={t}
+                        onDrillDown={handleChartDrillDown}
+                        onGoUp={handleGoUp}
+                        canGoUp={!!currentViewPath && normalizePathForMatch(currentViewPath) !== normalizePathForMatch(data.path)}
+                      />
+                    </Suspense>
                   </motion.div>
                 )}
               </AnimatePresence>

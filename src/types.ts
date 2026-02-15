@@ -16,3 +16,8 @@ export interface SizeUpdate {
   is_restricted: boolean;
   file_count: number;
 }
+
+export interface StructureUpdate {
+  path: string;
+  children: FileNode[];
+}

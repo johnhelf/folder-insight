@@ -39,6 +39,12 @@ struct SizeUpdate {
     file_count: u64,
 }
 
+#[derive(Serialize, Clone, Debug)]
+struct StructureUpdate {
+    path: String,
+    children: Vec<FileNode>,
+}
+
 /// 规范化路径字符串
 fn normalize_path_string(path: &str) -> String {
     PathBuf::from(path)
@@ -121,6 +127,49 @@ fn get_allocated_size(path: &Path, logical_size: u64) -> u64 {
     logical_size
 }
 
+/// 扫描并发送结构更新
+fn scan_and_emit_structure(path: &Path, app_handle: &AppHandle) {
+    if let Ok(entries) = fs::read_dir(path) {
+        let mut children = Vec::new();
+        for child in entries.flatten() {
+            let child_path = child.path();
+            let child_name = child_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let child_meta = child.metadata().ok();
+            let is_dir = child_meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+            let size = if !is_dir { child_meta.as_ref().map(|m| m.len()) } else { None };
+            let allocated = if !is_dir { size.map(|s| get_allocated_size(&child_path, s)) } else { None };
+            
+            children.push(FileNode {
+                name: child_name,
+                path: normalize_path_string(&child_path.to_string_lossy()),
+                size,
+                allocated_size: allocated,
+                base_size: size.unwrap_or(0),
+                base_allocated_size: allocated.unwrap_or(0),
+                is_dir,
+                is_restricted: false,
+                file_count: if is_dir { 0 } else { 1 },
+                children: None,
+            });
+        }
+        
+        children.sort_by(|a, b| {
+            if a.is_dir && !b.is_dir {
+                std::cmp::Ordering::Less
+            } else if !a.is_dir && b.is_dir {
+                std::cmp::Ordering::Greater
+            } else {
+                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+            }
+        });
+
+        let _ = app_handle.emit("folder-structure-updated", StructureUpdate {
+            path: normalize_path_string(&path.to_string_lossy()),
+            children,
+        });
+    }
+}
+
 /// 后台扫描任务：使用 WalkDir 遍历并实时通过事件回传结果
 fn run_background_scan(
     root_path: String,
@@ -165,6 +214,38 @@ fn run_background_scan(
     #[cfg(not(unix))]
     let is_ignored_path = |_: &Path| -> bool { false };
 
+    // Phase 1: Rapid structure scan for depth 1 and 2 (BFS-like)
+    // 快速扫描前两层目录结构，以便前端能尽快展示目录树，无需等待深度扫描完成
+    // Rapidly scan structure for depth 1 & 2 so frontend can show tree without waiting for deep scan
+    if let Ok(entries) = fs::read_dir(&root_path_buf) {
+        for entry in entries.flatten() {
+             if let Ok(ft) = entry.file_type() {
+                 if ft.is_dir() {
+                     let p = entry.path();
+                     if !is_ignored_path(&p) {
+                        // Emit structure for this depth 1 dir (so we see depth 2 items)
+                        scan_and_emit_structure(&p, &app_handle);
+                        
+                        // Also scan depth 2 dirs (so we see depth 3 items)
+                        if let Ok(sub_entries) = fs::read_dir(&p) {
+                            for sub in sub_entries.flatten() {
+                                if let Ok(sub_ft) = sub.file_type() {
+                                    if sub_ft.is_dir() {
+                                        let sub_p = sub.path();
+                                        if !is_ignored_path(&sub_p) {
+                                            scan_and_emit_structure(&sub_p, &app_handle);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                     }
+                 }
+             }
+        }
+    }
+
+    // Phase 2: Full Deep Scan (WalkDir)
     // 使用 WalkDir 进行深度优先遍历
     for entry in WalkDir::new(&root_path_buf)
         .into_iter()
@@ -172,6 +253,7 @@ fn run_background_scan(
         .filter_map(|e| e.ok())
     {
         let path = entry.path();
+        // let depth = entry.depth(); // Not needed for structure anymore
         
         // Double check for root path itself if it's one of the ignored paths
         if is_ignored_path(path) {
@@ -192,7 +274,22 @@ fn run_background_scan(
             }
         };
 
-        if !meta.is_dir() {
+        if meta.is_dir() {
+            let depth = entry.depth();
+            // Phase 1 covers depth 0 (root) and depth 1 (immediate children).
+            // We need to scan and emit structure for depth >= 1 to populate depth 2 and deeper.
+            // Phase 1 覆盖了第 0 层（根）和第 1 层（直接子节点）。
+            // 我们需要为 depth >= 1 扫描并发送结构，以填充第 2 层及更深层级。
+            if depth >= 1 {
+                 scan_and_emit_structure(&path, &app_handle);
+            }
+
+            // 确保目录在 map 中存在
+            let p_str = normalize_path_string(&path.to_string_lossy());
+            dir_stats.entry(p_str.clone()).or_insert((0, 0, 0, false));
+            pending_updates.insert(p_str);
+        } else {
+            // 是文件
             let size = meta.len();
             let allocated = get_allocated_size(path, size);
 
@@ -215,11 +312,6 @@ fn run_background_scan(
                 }
                 current = p.parent();
             }
-        } else {
-            // 确保目录在 map 中存在
-            let p_str = normalize_path_string(&path.to_string_lossy());
-            dir_stats.entry(p_str.clone()).or_insert((0, 0, 0, false));
-            pending_updates.insert(p_str);
         }
 
         // 节流：每 200ms 发送一次更新
@@ -262,9 +354,17 @@ fn emit_batch_updates(
 /// 判断是否需要启动后台计算
 fn try_mark_in_progress(
     normalized_path: &str,
-    cache: &Arc<Mutex<HashMap<String, (u64, u64, u64, bool)>>>,
+    _cache: &Arc<Mutex<HashMap<String, (u64, u64, u64, bool)>>>,
     in_progress: &Arc<Mutex<HashSet<String>>>,
 ) -> bool {
+    // 移除缓存检查，确保每次请求（特别是刷新时）都重新启动扫描，
+    // 否则如果缓存命中，后台任务不会启动，导致深层结构更新（folder-structure-updated）无法发送，
+    // 前端将永远只显示初始的 2 层结构。
+    // Remove cache check to ensure scan restarts on every request (especially refresh).
+    // Otherwise if cache hits, background task won't start, and deep structure updates won't be sent,
+    // leaving frontend with only the initial 2-layer tree.
+    
+    /*
     let cache_hit = {
         let cache = cache.lock().unwrap();
         cache.get(normalized_path).is_some()
@@ -272,6 +372,7 @@ fn try_mark_in_progress(
     if cache_hit {
         return false;
     }
+    */
 
     let mut in_progress = in_progress.lock().unwrap();
     if in_progress.contains(normalized_path) {
@@ -282,6 +383,135 @@ fn try_mark_in_progress(
     true
 }
 
+const MAX_INITIAL_DEPTH: usize = 2;
+
+/// 递归构建文件树
+fn build_file_tree(
+    path: &Path,
+    current_depth: usize,
+    max_depth: usize,
+    state: &AppState,
+) -> Option<FileNode> {
+    let normalized_path = normalize_path_string(&path.to_string_lossy());
+    
+    // 处理根路径名称为空的情况
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| normalized_path.clone());
+
+    let meta = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+
+    let is_dir = meta.is_dir();
+    let mut children = None;
+    let mut base_size = 0;
+    let mut base_allocated_size = 0;
+    let mut file_count = 0;
+
+    if is_dir {
+        // 检查缓存获取大小
+        let (cached_size, cached_allocated, cached_count, cached_restricted) = {
+            let cache = state.size_cache.lock().unwrap();
+            if let Some(res) = cache.get(&normalized_path) {
+                (Some(res.0), Some(res.1), res.2, res.3)
+            } else {
+                (None, None, 0, false)
+            }
+        };
+        let mut is_restricted = cached_restricted;
+
+        let mut calculated_size: u64 = 0;
+        let mut calculated_allocated: u64 = 0;
+
+        // 如果未达到最大深度，递归读取子节点
+        if current_depth < max_depth {
+            match fs::read_dir(path) {
+                Ok(entries) => {
+                    let mut child_nodes = Vec::new();
+                    for entry in entries.flatten() {
+                        let entry_path = entry.path();
+                        if let Some(child_node) = build_file_tree(&entry_path, current_depth + 1, max_depth, state) {
+                            let child_size = child_node.size.unwrap_or(0);
+                            let child_allocated = child_node.allocated_size.unwrap_or(0);
+                            
+                            calculated_size += child_size;
+                            calculated_allocated += child_allocated;
+
+                            if !child_node.is_dir {
+                                base_size += child_size;
+                                base_allocated_size += child_allocated;
+                                file_count += 1;
+                            }
+                            child_nodes.push(child_node);
+                        }
+                    }
+
+                    // 排序
+                    child_nodes.sort_by(|a, b| {
+                        let a_is_dir = a.is_dir;
+                        let b_is_dir = b.is_dir;
+                        if a_is_dir && !b_is_dir {
+                            std::cmp::Ordering::Less
+                        } else if !a_is_dir && b_is_dir {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            let size_a = a.size.unwrap_or(0);
+                            let size_b = b.size.unwrap_or(0);
+                            if size_a != size_b {
+                                size_b.cmp(&size_a)
+                            } else {
+                                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                            }
+                        }
+                    });
+
+                    children = Some(child_nodes);
+                }
+                Err(_) => {
+                    is_restricted = true;
+                }
+            }
+        }
+
+        // 如果缓存有值，优先使用缓存的统计数据；否则使用递归计算的初步数据
+        let final_size = cached_size.or(Some(calculated_size));
+        let final_allocated = cached_allocated.or(Some(calculated_allocated));
+        let final_file_count = if cached_count > 0 { cached_count } else { file_count };
+
+        Some(FileNode {
+            name,
+            path: normalized_path,
+            size: final_size,
+            allocated_size: final_allocated,
+            base_size,
+            base_allocated_size,
+            is_dir: true,
+            is_restricted,
+            file_count: final_file_count,
+            children,
+        })
+    } else {
+        let size = meta.len();
+        let allocated = get_allocated_size(path, size);
+        Some(FileNode {
+            name,
+            path: normalized_path,
+            size: Some(size),
+            allocated_size: Some(allocated),
+            base_size: size,
+            base_allocated_size: allocated,
+            is_dir: false,
+            is_restricted: false,
+            file_count: 1,
+            children: None,
+        })
+    }
+}
+
+
 /// 快速扫描目录结构，并启动后台任务计算目录大小
 #[tauri::command]
 async fn analyze_directory(
@@ -291,87 +521,13 @@ async fn analyze_directory(
 ) -> Result<FileNode, String> {
     let root_path = normalize_path_string(&path);
     let path_obj = Path::new(&root_path);
-    let mut children = Vec::new();
-    let mut current_dir_base_size: u64 = 0;
-    let mut current_dir_base_allocated_size: u64 = 0;
-    let mut has_subdirs = false;
-    let mut current_dir_file_count = 0;
+    
+    // 递归构建初始树（默认深度 1，快速返回）
+    // Recursively build initial tree (depth 1, fast return)
+    let root_node = build_file_tree(path_obj, 0, MAX_INITIAL_DEPTH, &state)
+        .ok_or_else(|| "Failed to access directory".to_string())?;
 
-    if let Ok(entries) = fs::read_dir(path_obj) {
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-            let meta = match fs::symlink_metadata(&entry_path) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-
-            let is_dir = meta.is_dir();
-            if is_dir {
-                has_subdirs = true;
-            }
-            let normalized_child = normalize_path_string(&entry_path.to_string_lossy());
-
-            let (size, allocated_size, count, is_restricted) = if is_dir {
-                let cache_lock = state.size_cache.lock().unwrap();
-                if let Some(res) = cache_lock.get(&normalized_child) {
-                    (Some(res.0), Some(res.1), res.2, res.3)
-                } else {
-                    (None, None, 0, false)
-                }
-            } else {
-                let s = meta.len();
-                let a = get_allocated_size(&entry_path, s);
-                (Some(s), Some(a), 1, false)
-            };
-
-            if !is_dir {
-                current_dir_base_size += size.unwrap_or(0);
-                current_dir_base_allocated_size += allocated_size.unwrap_or(0);
-                current_dir_file_count += 1;
-            }
-
-            children.push(FileNode {
-                name,
-                path: normalized_child,
-                size,
-                allocated_size,
-                base_size: if is_dir { 0 } else { size.unwrap_or(0) },
-                base_allocated_size: if is_dir { 0 } else { allocated_size.unwrap_or(0) },
-                is_dir,
-                is_restricted,
-                file_count: count,
-                children: None,
-            });
-        }
-    }
-
-    if !has_subdirs {
-        let mut cache = state.size_cache.lock().unwrap();
-        cache.insert(
-            root_path.clone(),
-            (current_dir_base_size, current_dir_base_allocated_size, current_dir_file_count, false),
-        );
-    }
-
-    children.sort_by(|a, b| {
-        let a_is_dir = a.is_dir;
-        let b_is_dir = b.is_dir;
-        if a_is_dir && !b_is_dir {
-            std::cmp::Ordering::Less
-        } else if !a_is_dir && b_is_dir {
-            std::cmp::Ordering::Greater
-        } else {
-            let size_a = a.size.unwrap_or(0);
-            let size_b = b.size.unwrap_or(0);
-            if size_a != size_b {
-                size_b.cmp(&size_a)
-            } else {
-                a.name.to_lowercase().cmp(&b.name.to_lowercase())
-            }
-        }
-    });
-
+    // 启动后台扫描任务
     let should_compute_root =
         try_mark_in_progress(&root_path, &state.size_cache, &state.in_progress);
 
@@ -381,6 +537,17 @@ async fn analyze_directory(
         let app_handle = app.clone();
         let root_to_compute = root_path.clone();
 
+        // 由于 AppState 不易在线程间传递（包含 Mutex），我们这里手动构建更深层级的结构
+        // 但 build_file_tree 需要 &AppState 读取缓存。
+        // 为了简化，我们只在后台计算大小（run_background_scan），
+        // 并在前端需要时再请求更深层级（如果前端支持）。
+        // 但既然用户想要“一次性给够”，我们可以尝试在后台线程中构建更深的树并发送事件。
+        // 然而 build_file_tree 依赖 state，state 是 Arc<Mutex<...>> 包装的字段？
+        // AppState 结构体定义中字段都是 Arc<Mutex<...>>，所以 AppState 本身 Clone 代价很小且可 Send？
+        // 不，AppState 结构体本身没有 derive Clone。
+        // 我们需要传递 state 的内部 Arc 成员。
+
+        
         std::thread::Builder::new()
             .name("dir_size_worker".to_string())
             .stack_size(4 * 1024 * 1024)
@@ -392,32 +559,7 @@ async fn analyze_directory(
             .expect("Failed to spawn background thread");
     }
 
-    let name = path_obj
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| root_path.clone());
-
-    let (root_size, root_allocated, root_count, root_restricted) = {
-        let cache = state.size_cache.lock().unwrap();
-        if let Some(res) = cache.get(&root_path) {
-            (Some(res.0), Some(res.1), res.2, res.3)
-        } else {
-            (None, None, current_dir_file_count, false)
-        }
-    };
-
-    Ok(FileNode {
-        name,
-        path: root_path,
-        size: root_size,
-        allocated_size: root_allocated,
-        base_size: current_dir_base_size,
-        base_allocated_size: current_dir_base_allocated_size,
-        is_dir: true,
-        is_restricted: root_restricted,
-        file_count: root_count,
-        children: Some(children),
-    })
+    Ok(root_node)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
