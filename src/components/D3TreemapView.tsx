@@ -135,8 +135,10 @@ export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
 
     // Render nodes
     // We render all nodes to show hierarchy borders
+    // Optimization: Filter out very small rectangles (less than 1x1 pixels)
+    // 优化：过滤掉非常小的矩形（小于 1x1 像素），解决 Linux 下的卡顿问题
     const cell = g.selectAll("g")
-      .data(root.descendants())
+      .data(root.descendants().filter(d => (d.x1 - d.x0) > 1 && (d.y1 - d.y0) > 1))
       .join("g")
       .attr("transform", d => `translate(${d.x0},${d.y0})`);
 

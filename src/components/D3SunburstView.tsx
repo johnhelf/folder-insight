@@ -95,7 +95,9 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
     const path = g.append("g")
       .selectAll("path")
       // Show up to 7 levels as requested
-      .data(root.descendants().filter(d => d.depth <= 7))
+      // Optimization: Filter out very small arcs (less than 0.005 radians) to improve performance
+      // 优化：过滤掉非常小的扇区（小于 0.005 弧度），以减少 DOM 节点数量，解决 Linux 下的卡顿问题
+      .data(root.descendants().filter(d => d.depth <= 7 && (d.x1 - d.x0) > 0.005))
       .join("path")
       .attr("fill", d => getNodeColor(d))
       .attr("fill-opacity", d => {
