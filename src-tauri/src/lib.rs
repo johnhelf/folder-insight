@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
 
@@ -28,6 +28,7 @@ pub struct FileNode {
     is_restricted: bool,
     file_count: u64,
     children: Option<Vec<FileNode>>,
+    modified: Option<u64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -44,6 +45,40 @@ struct StructureUpdate {
     path: String,
     children: Vec<FileNode>,
 }
+
+#[derive(Serialize, Clone, Debug)]
+struct BatchSizeUpdate {
+    updates: Vec<SizeUpdate>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct BatchStructureUpdate {
+    updates: Vec<StructureUpdate>,
+}
+
+fn emit_batch_structure_updates(
+    app_handle: &AppHandle,
+    pending_structures: &mut Vec<StructureUpdate>,
+) {
+    if pending_structures.is_empty() {
+        return;
+    }
+
+    // Chunk updates to avoid too large payloads
+    // 分块发送，避免单次 payload 过大
+    const CHUNK_SIZE: usize = 50;
+    
+    // We drain all updates, chunk them, and emit
+    let all_updates: Vec<StructureUpdate> = pending_structures.drain(..).collect();
+    
+    for chunk in all_updates.chunks(CHUNK_SIZE) {
+        let batch = BatchStructureUpdate {
+            updates: chunk.to_vec(),
+        };
+        let _ = app_handle.emit("folder-structure-batch-updated", batch);
+    }
+}
+
 
 /// 规范化路径字符串
 fn normalize_path_string(path: &str) -> String {
@@ -127,8 +162,8 @@ fn get_allocated_size(path: &Path, logical_size: u64) -> u64 {
     logical_size
 }
 
-/// 扫描并发送结构更新
-fn scan_and_emit_structure(path: &Path, app_handle: &AppHandle) {
+/// 扫描并返回结构更新，但不发送
+fn scan_directory_structure(path: &Path) -> Option<StructureUpdate> {
     if let Ok(entries) = fs::read_dir(path) {
         let mut children = Vec::new();
         for child in entries.flatten() {
@@ -138,6 +173,10 @@ fn scan_and_emit_structure(path: &Path, app_handle: &AppHandle) {
             let is_dir = child_meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
             let size = if !is_dir { child_meta.as_ref().map(|m| m.len()) } else { None };
             let allocated = if !is_dir { size.map(|s| get_allocated_size(&child_path, s)) } else { None };
+            let modified = child_meta.as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
             
             children.push(FileNode {
                 name: child_name,
@@ -150,6 +189,7 @@ fn scan_and_emit_structure(path: &Path, app_handle: &AppHandle) {
                 is_restricted: false,
                 file_count: if is_dir { 0 } else { 1 },
                 children: None,
+                modified,
             });
         }
         
@@ -163,12 +203,20 @@ fn scan_and_emit_structure(path: &Path, app_handle: &AppHandle) {
             }
         });
 
-        let _ = app_handle.emit("folder-structure-updated", StructureUpdate {
+        return Some(StructureUpdate {
             path: normalize_path_string(&path.to_string_lossy()),
             children,
         });
     }
+    None
 }
+
+/// 扫描并发送结构更新（兼容旧逻辑，用于Phase 1） - DEPRECATED / REMOVED
+// fn scan_and_emit_structure(path: &Path, app_handle: &AppHandle) {
+//     if let Some(update) = scan_directory_structure(path) {
+//         let _ = app_handle.emit("folder-structure-updated", update);
+//     }
+// }
 
 /// 后台扫描任务：使用 WalkDir 遍历并实时通过事件回传结果
 fn run_background_scan(
@@ -180,6 +228,7 @@ fn run_background_scan(
     let root_path_buf = PathBuf::from(&root_path);
     let mut last_emit = Instant::now();
     let mut pending_updates: HashSet<String> = HashSet::new();
+    let mut pending_structures: Vec<StructureUpdate> = Vec::new();
 
     // Linux-specific: Ignore /proc, /sys, /dev, /run, /tmp
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -214,44 +263,38 @@ fn run_background_scan(
     #[cfg(not(unix))]
     let is_ignored_path = |_: &Path| -> bool { false };
 
-    // Phase 1: Rapid structure scan for depth 1 and 2 (BFS-like)
-    // 快速扫描前两层目录结构，以便前端能尽快展示目录树，无需等待深度扫描完成
-    // Rapidly scan structure for depth 1 & 2 so frontend can show tree without waiting for deep scan
-    if let Ok(entries) = fs::read_dir(&root_path_buf) {
-        for entry in entries.flatten() {
-             if let Ok(ft) = entry.file_type() {
-                 if ft.is_dir() {
-                     let p = entry.path();
-                     if !is_ignored_path(&p) {
-                        // Emit structure for this depth 1 dir (so we see depth 2 items)
-                        scan_and_emit_structure(&p, &app_handle);
-                        
-                        // Also scan depth 2 dirs (so we see depth 3 items)
-                        if let Ok(sub_entries) = fs::read_dir(&p) {
-                            for sub in sub_entries.flatten() {
-                                if let Ok(sub_ft) = sub.file_type() {
-                                    if sub_ft.is_dir() {
-                                        let sub_p = sub.path();
-                                        if !is_ignored_path(&sub_p) {
-                                            scan_and_emit_structure(&sub_p, &app_handle);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                     }
-                 }
-             }
-        }
-    }
-
+    // Phase 1: Rapid structure scan - REMOVED
+    // 由于 analyze_directory 现在已经扫描了足够的深度 (MAX_INITIAL_DEPTH=9)，
+    // 我们不再需要快速扫描前两层，这避免了用浅层结构覆盖深层结构的风险。
+    // Since analyze_directory now scans enough depth (MAX_INITIAL_DEPTH=9),
+    // we no longer need rapid scan for first 2 layers, avoiding risk of overwriting deep structure with shallow one.
+    
     // Phase 2: Full Deep Scan (WalkDir)
     // 使用 WalkDir 进行深度优先遍历
-    for entry in WalkDir::new(&root_path_buf)
-        .into_iter()
-        .filter_entry(|e| !is_ignored_path(e.path()))
-        .filter_map(|e| e.ok())
-    {
+    // Use WalkDir for deep traversal
+    let walker = WalkDir::new(&root_path_buf).into_iter();
+    
+    // 不再使用 filter_map(|e| e.ok()) 忽略错误，而是显式处理
+    // Don't use filter_map(|e| e.ok()) to ignore errors, handle them explicitly
+    for entry_result in walker.filter_entry(|e| !is_ignored_path(e.path())) {
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(err) => {
+                // 如果遇到错误（如权限不足），尝试标记该路径为受限
+                // If error encountered (e.g. Permission Denied), try to mark path as restricted
+                if let Some(path) = err.path() {
+                    let p_str = normalize_path_string(&path.to_string_lossy());
+                    // 只在它是目录时记录？通常 WalkDir 错误是在尝试进入目录时发生的
+                    // Usually WalkDir error happens when trying to enter a directory
+                    let stats = dir_stats.entry(p_str.clone()).or_insert((0, 0, 0, false));
+                    stats.3 = true; // is_restricted = true
+                    pending_updates.insert(p_str);
+                    eprintln!("Error accessing {}: {}", path.display(), err);
+                }
+                continue;
+            }
+        };
+
         let path = entry.path();
         // let depth = entry.depth(); // Not needed for structure anymore
         
@@ -280,14 +323,20 @@ fn run_background_scan(
             // We need to scan and emit structure for depth >= 1 to populate depth 2 and deeper.
             // Phase 1 覆盖了第 0 层（根）和第 1 层（直接子节点）。
             // 我们需要为 depth >= 1 扫描并发送结构，以填充第 2 层及更深层级。
-            if depth >= 1 {
-                 scan_and_emit_structure(&path, &app_handle);
+            // FIX: Only emit structure for depth >= MAX_INITIAL_DEPTH to avoid overwriting existing deep structure
+            // 修复：只为 depth >= MAX_INITIAL_DEPTH 发送结构，避免覆盖已有的深层结构
+            if depth >= MAX_INITIAL_DEPTH {
+                 if let Some(update) = scan_directory_structure(&path) {
+                    pending_structures.push(update);
+                 }
             }
 
             // 确保目录在 map 中存在
             let p_str = normalize_path_string(&path.to_string_lossy());
             dir_stats.entry(p_str.clone()).or_insert((0, 0, 0, false));
-            pending_updates.insert(p_str);
+            // Removed pending_updates.insert(p_str) to avoid premature "0 B" updates
+            // 移除了 pending_updates.insert(p_str) 以避免过早发送 "0 B" 更新，
+            // 只有当计算出大小后才发送更新，或者在扫描结束时统一处理空目录。
         } else {
             // 是文件
             let size = meta.len();
@@ -316,12 +365,28 @@ fn run_background_scan(
 
         // 节流：每 200ms 发送一次更新
         if last_emit.elapsed() > Duration::from_millis(200) {
+            // 先发送结构更新，确保前端有节点可以接收大小更新
+            // Send structure updates first so frontend has nodes to receive size updates
+            emit_batch_structure_updates(&app_handle, &mut pending_structures);
+
             emit_batch_updates(&app_handle, &dir_stats, &mut pending_updates);
+            
             last_emit = Instant::now();
         }
     }
 
+    // 扫描结束，将所有统计结果为 0 的目录（即空目录）加入待更新队列，
+    // 确保前端能从 "Calculating..." 更新为 "0 B"。
+    // At the end of scan, add all directories with 0 size/count (empty dirs) to pending updates,
+    // ensuring frontend updates from "Calculating..." to "0 B".
+    for (path, stats) in &dir_stats {
+        if stats.0 == 0 && stats.2 == 0 {
+             pending_updates.insert(path.clone());
+        }
+    }
+
     // 最后发送剩余的更新并写入缓存
+    emit_batch_structure_updates(&app_handle, &mut pending_structures);
     emit_batch_updates(&app_handle, &dir_stats, &mut pending_updates);
     
     let mut cache_lock = cache.lock().unwrap();
@@ -335,19 +400,26 @@ fn emit_batch_updates(
     dir_stats: &HashMap<String, (u64, u64, u64, bool)>,
     pending_updates: &mut HashSet<String>,
 ) {
+    let mut batch: Vec<SizeUpdate> = Vec::with_capacity(100);
+    
     for path_str in pending_updates.drain() {
         if let Some(stats) = dir_stats.get(&path_str) {
-            let _ = app_handle.emit(
-                "folder-size-updated",
-                SizeUpdate {
-                    path: path_str,
-                    size: stats.0,
-                    allocated_size: stats.1,
-                    is_restricted: stats.3,
-                    file_count: stats.2,
-                },
-            );
+            batch.push(SizeUpdate {
+                path: path_str,
+                size: stats.0,
+                allocated_size: stats.1,
+                is_restricted: stats.3,
+                file_count: stats.2,
+            });
+
+            if batch.len() >= 100 {
+                let _ = app_handle.emit("folder-size-batch-updated", BatchSizeUpdate { updates: batch.drain(..).collect() });
+            }
         }
+    }
+
+    if !batch.is_empty() {
+        let _ = app_handle.emit("folder-size-batch-updated", BatchSizeUpdate { updates: batch });
     }
 }
 
@@ -383,7 +455,7 @@ fn try_mark_in_progress(
     true
 }
 
-const MAX_INITIAL_DEPTH: usize = 2;
+const MAX_INITIAL_DEPTH: usize = 9;
 
 /// 递归构建文件树
 fn build_file_tree(
@@ -410,6 +482,10 @@ fn build_file_tree(
     let mut base_size = 0;
     let mut base_allocated_size = 0;
     let mut file_count = 0;
+
+    let modified = meta.modified().ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
 
     if is_dir {
         // 检查缓存获取大小
@@ -492,6 +568,7 @@ fn build_file_tree(
             is_restricted,
             file_count: final_file_count,
             children,
+            modified,
         })
     } else {
         let size = meta.len();
@@ -507,6 +584,7 @@ fn build_file_tree(
             is_restricted: false,
             file_count: 1,
             children: None,
+            modified,
         })
     }
 }

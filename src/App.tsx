@@ -25,7 +25,7 @@ import {
   type LanguageMode,
 } from "./i18n";
 import { processForECharts } from "./chartHelpers";
-import { FileNode, SizeUpdate, StructureUpdate } from "./types";
+import { FileNode, SizeUpdate, StructureUpdate, BatchStructureUpdate, BatchSizeUpdate } from "./types";
 import { SponsorModal } from "./components/SponsorModal";
 import { TreeView } from "./components/TreeView";
 // import { ChartView } from "./components/ChartView";
@@ -242,29 +242,22 @@ function App() {
     structureUpdates: Map<string, StructureUpdate>,
     sizeUpdates: Map<string, SizeUpdate>,
     affectedPaths: Set<string>,
-    _isRoot: boolean = false
+    _isRoot: boolean = false,
+    appliedPaths: Set<string>
   ): FileNode => {
     const normalizedPath = normalizePathForMatch(node.path);
     
-    // 暂时移除路径过滤优化，以确保所有更新都能被应用（解决刷新后只有2层的问题）
-    // Temporarily remove path filtering optimization to ensure all updates are applied
-    // if (!isRoot && !affectedPaths.has(normalizedPath)) {
-    //   return node;
-    // }
-
     // Debugging: Log path matching for root or first level children to verify normalization
     // 调试：记录根节点或第一层子节点的路径匹配情况，验证标准化逻辑
     if (_isRoot && structureUpdates.size > 0) {
-        console.log(`[applyBatchUpdates] Root path: ${normalizedPath}. Pending structure updates: ${structureUpdates.size}`);
-        // Log first few keys in updates
-        const keys = Array.from(structureUpdates.keys()).slice(0, 3);
-        console.log(`[applyBatchUpdates] Sample keys: ${JSON.stringify(keys)}`);
+        // console.log(`[applyBatchUpdates] Root path: ${normalizedPath}. Pending structure updates: ${structureUpdates.size}`);
     }
 
     let newNode = node;
     
     // 1. 应用结构更新 / Apply structure update
     if (structureUpdates.has(normalizedPath)) {
+      appliedPaths.add(normalizedPath); // Mark as applied
       const update = structureUpdates.get(normalizedPath)!;
       // Ensure children are not null if update provides empty array
       const newChildren = update.children || [];
@@ -301,6 +294,7 @@ function App() {
 
     // 2. 应用大小更新 / Apply size update
     if (sizeUpdates.has(normalizedPath)) {
+      appliedPaths.add(normalizedPath); // Mark as applied
       const update = sizeUpdates.get(normalizedPath)!;
       newNode = {
         ...newNode,
@@ -318,7 +312,7 @@ function App() {
     const newChildren = newNode.children.map(child => {
       // 这里的 affectedPaths 参数已经不再被使用，但为了兼容性保留
       // affectedPaths parameter is unused now but kept for compatibility
-      const newChild = applyBatchUpdates(child, structureUpdates, sizeUpdates, affectedPaths);
+      const newChild = applyBatchUpdates(child, structureUpdates, sizeUpdates, affectedPaths, false, appliedPaths);
       if (newChild !== child) childrenChanged = true;
       return newChild;
     });
@@ -398,13 +392,20 @@ function App() {
         // const affected = getAffectedPaths([sUpdates, zUpdates]);
         // console.log(`[analyzePath] Applying updates. Affected paths: ${affected.size}`);
         console.log(`[analyzePath] Applying updates. Structure: ${sUpdates.size}, Size: ${zUpdates.size}`);
-        updatedResult = applyBatchUpdates(updatedResult, sUpdates, zUpdates, new Set(), true);
+        const appliedPaths = new Set<string>();
+        updatedResult = applyBatchUpdates(updatedResult, sUpdates, zUpdates, new Set(), true, appliedPaths);
+        
+        // Remove applied
+        for (const path of appliedPaths) {
+            pendingStructureUpdates.current.delete(path);
+            pendingUpdates.current.delete(path);
+        }
       } else {
         console.log(`[analyzePath] No pending updates to apply.`);
       }
       
-      pendingStructureUpdates.current.clear();
-      pendingUpdates.current.clear();
+      // pendingStructureUpdates.current.clear();
+      // pendingUpdates.current.clear();
 
       setData(sortTreeRecursive(updatedResult));
       setCurrentViewPath(updatedResult.path);
@@ -494,27 +495,92 @@ function App() {
             return prev;
           }
 
-          // 清空引用，以便接收新更新
-          // Clear refs only when we are about to apply them
-          pendingStructureUpdates.current.clear();
-          pendingUpdates.current.clear();
-
           console.log(`Processing batch updates: ${sUpdates.size} structure, ${zUpdates.size} size`);
           
-          // 优化：先检查更新是否在当前树的范围内，避免无效遍历
-          // Optimization: Check if updates are within current tree scope to avoid invalid traversal
-          // (Simple optimization: just check if we have any updates matching the current tree root path prefix?)
-          // For now, keep full traversal but ensure it is correct.
+          // 3. 关键修复：不再清空所有 pendingUpdates！
+          //    只在 applyBatchUpdates 返回后，根据实际被应用的 updates 来清理？
+          //    或者，在 applyBatchUpdates 中返回“未被应用的 updates”？
+          //    
+          //    由于 React 状态更新是异步的，我们不能轻易知道哪些 updates 被应用了。
+          //    但是，我们的 applyBatchUpdates 是同步遍历整个树。
+          //    如果树中不存在该节点，则 update 不会被应用。
+          //    
+          //    为了简单且安全：
+          //    我们将 pendingUpdates 清空，但在 applyBatchUpdates 中，如果遇到未应用的 updates，我们需要重新放回 pendingUpdates？
+          //    不，这样太复杂。
+          //
+          //    更好的策略：
+          //    每次只清空 pendingStructureUpdates（因为结构更新通常是添加新节点，一旦添加就不需要了）。
+          //    对于 pendingUpdates (Size)，我们需要确保它们的目标节点存在。
+          //    
+          //    如果结构更新先于大小更新到达，那么结构更新会创建节点，大小更新随后应用。
+          //    如果大小更新先于结构更新到达（或者同时到达但处理顺序问题），
+          //    applyBatchUpdates 会先处理结构更新（创建节点），再处理大小更新。
+          //    
+          //    唯一的问题是：如果结构更新 **缺失**（例如网络丢包，或者逻辑错误），那么大小更新就永远找不到节点。
+          //    
+          //    但是，如果结构更新在 pendingStructureUpdates 中，它一定会被应用（只要父节点存在）。
+          //    如果父节点也不存在？那说明祖先的结构更新也没到。
+          //    
+          //    所以，只要我们保证 pendingStructureUpdates 和 pendingUpdates 一起传给 applyBatchUpdates，
+          //    并且 applyBatchUpdates 先应用结构，再应用大小，这就应该没问题。
+          //    
+          //    除非：applyBatchUpdates 的遍历逻辑有漏洞，导致某些节点被跳过。
+          //    
+          //    之前的逻辑是：pendingUpdates.current.clear()。
+          //    这假设所有 updates 都能在当前这一轮被应用。
+          //    如果当前树中确实没有这个节点（比如结构更新还没来），那这个 size update 就丢了。
+          //    
+          //    修复方案：
+          //    引入一个机制，记录哪些 path 被成功更新了。
+          //    或者，简单地：不清除 pendingUpdates，除非确认节点已存在？
+          //    
+          //    但这会导致 pendingUpdates 无限膨胀。
+          //    
+          //    折衷方案：
+          //    给 pendingUpdates 设置一个 TTL？或者重试次数？
+          //    
+          //    让我们回看 applyBatchUpdates。它遍历整个树。
+          //    如果 sizeUpdates 包含 "A/B"，但树里只有 "A"，且 structureUpdates 不包含 "A/B"。
+          //    那么 "A/B" 的 size update 无法应用。
+          //    这种情况发生于：SizeUpdate(B) 到了，但 StructureUpdate(B) 还没到。
+          //    
+          //    此时，我们应该 **保留** SizeUpdate(B) 在 pendingUpdates 中！
+          //    
+          //    Implementation:
+          //    1. Pass a set to applyBatchUpdates to collect "applied paths".
+          //    2. After applyBatchUpdates, clear only the applied paths from pendingUpdates.current.
           
-          // const affected = getAffectedPaths([sUpdates, zUpdates]);
-          // console.log(`[scheduleUpdate] Applying batch updates. Affected: ${affected.size}, Root: ${prev.path}`);
-          console.log(`[scheduleUpdate] Applying batch updates. Structure: ${sUpdates.size}, Size: ${zUpdates.size}`);
-          // 单次遍历应用所有更新
-          // Single pass application
-          const updatedTree = applyBatchUpdates(prev, sUpdates, zUpdates, new Set(), true);
+          const appliedPaths = new Set<string>();
+          const updatedTree = applyBatchUpdates(prev, sUpdates, zUpdates, new Set(), true, appliedPaths);
+          
+          // 清理已应用的结构更新
+          // Clear applied structure updates
+          // Structure updates are generally "one-off", if applied, clear.
+          // If not applied (parent missing), should we keep them?
+          // Yes, same logic applies to structure updates!
+          // If we receive Structure(GrandChild) but not Structure(Child), GrandChild cannot be added.
+          
+          // Let's modify applyBatchUpdates to track applied structure updates too?
+          // Actually, if we just keep everything that wasn't applied, it's safer.
+          
+          // Update: applyBatchUpdates now takes `appliedPaths` set.
+          
+          // Remove applied updates from refs
+          for (const path of appliedPaths) {
+             pendingStructureUpdates.current.delete(path);
+             pendingUpdates.current.delete(path);
+          }
+          
+          // Log remaining (unapplied) updates count
+          if (pendingStructureUpdates.current.size > 0 || pendingUpdates.current.size > 0) {
+              console.log(`[scheduleUpdate] Unapplied updates retained: ${pendingStructureUpdates.current.size} structure, ${pendingUpdates.current.size} size`);
+          }
+
+          console.log(`[scheduleUpdate] Applied ${appliedPaths.size} updates.`);
           
           // 只有在数据真正变化时才重新排序
-          // Only resort if data changed (which it did if we are here)
+          // Only resort if data changed
           return sortTreeRecursive(updatedTree); 
         });
       }, 500);
@@ -531,6 +597,18 @@ function App() {
       }, 2000);
     };
 
+    const unlistenSizeBatchPromise = listen<BatchSizeUpdate>('folder-size-batch-updated', (event) => {
+      markUpdating();
+      const { updates } = event.payload;
+      updates.forEach(update => {
+        pendingUpdates.current.set(normalizePathForMatch(update.path), update);
+      });
+      needsSort.current = true;
+      scheduleUpdate();
+    });
+
+    // 监听旧版单条更新（兼容性保留）
+    // Listen for legacy single update (kept for compatibility)
     const unlistenSizePromise = listen<SizeUpdate>('folder-size-updated', (event) => {
       markUpdating();
       const update = event.payload;
@@ -541,6 +619,18 @@ function App() {
       scheduleUpdate();
     });
 
+    const unlistenStructureBatchPromise = listen<BatchStructureUpdate>('folder-structure-batch-updated', (event) => {
+        markUpdating();
+        const { updates } = event.payload;
+        updates.forEach(update => {
+            pendingStructureUpdates.current.set(normalizePathForMatch(update.path), update);
+        });
+        needsSort.current = true;
+        scheduleUpdate();
+    });
+
+    // 监听旧版单条更新（兼容性保留）
+    // Listen for legacy single update (kept for compatibility)
     const unlistenStructurePromise = listen<StructureUpdate>('folder-structure-updated', (event) => {
       markUpdating();
       const update = event.payload;
@@ -552,7 +642,9 @@ function App() {
     });
 
     return () => {
+      unlistenSizeBatchPromise.then(unlisten => unlisten());
       unlistenSizePromise.then(unlisten => unlisten());
+      unlistenStructureBatchPromise.then(unlisten => unlisten());
       unlistenStructurePromise.then(unlisten => unlisten());
     };
   }, []); // 移除 isRealtimePaused 依赖 / Remove dependency
@@ -666,13 +758,20 @@ function App() {
       console.log(`[handleRefresh] Structure updates: ${sUpdates.size}, Size updates: ${zUpdates.size}`);
       if (sUpdates.size > 0 || zUpdates.size > 0) {
         // const affected = getAffectedPaths([sUpdates, zUpdates]);
-        updatedResult = applyBatchUpdates(updatedResult, sUpdates, zUpdates, new Set(), true);
+        const appliedPaths = new Set<string>();
+        updatedResult = applyBatchUpdates(updatedResult, sUpdates, zUpdates, new Set(), true, appliedPaths);
+        
+        // Clear applied updates from refs
+        for (const path of appliedPaths) {
+            pendingStructureUpdates.current.delete(path);
+            pendingUpdates.current.delete(path);
+        }
       }
       
-      // 清理已应用的更新
-      // Clear applied updates
-      pendingStructureUpdates.current.clear();
-      pendingUpdates.current.clear();
+      // 不再盲目清理所有 updates
+      // Don't blindly clear all updates anymore
+      // pendingStructureUpdates.current.clear();
+      // pendingUpdates.current.clear();
 
       setData(prev => {
         if (!prev) return updatedResult;
@@ -739,13 +838,19 @@ function App() {
             
             if (zUpdates.size > 0) {
                  // const affected = getAffectedPaths([zUpdates]);
-                 updatedNode = applyBatchUpdates(updatedNode, sUpdates, zUpdates, new Set(), true);
+                 const appliedPaths = new Set<string>();
+                 updatedNode = applyBatchUpdates(updatedNode, sUpdates, zUpdates, new Set(), true, appliedPaths);
+                 
+                 // Clear applied from pendingUpdates
+                 for (const path of appliedPaths) {
+                    pendingUpdates.current.delete(path);
+                 }
             }
 
             // 注意：这里不清理 pendingUpdates，因为其他路径可能还需要它
             // Note: Don't clear all pendingUpdates here as other paths might still need them
-            // 只移除当前路径相关的（如果有的话）
-            pendingUpdates.current.delete(normalizePathForMatch(path));
+            // 只移除当前路径相关的（如果有的话）- 已经在上面处理了
+            // pendingUpdates.current.delete(normalizePathForMatch(path));
 
             const newTree = updateNodeAtPath(prev, path, {
               children: updatedNode.children || [],
@@ -898,11 +1003,18 @@ function App() {
    * Handle chart click drill-down
    */
   const handleChartDrillDown = async (path: string) => {
-    if (!isTauri()) return;
+    if (!isTauri() || !data) return;
     
+    // 检查节点是否存在于当前树中
+    // Check if node exists in current tree
+    const node = findNodeByPath(data, path);
+    if (!node) {
+        console.warn(`[handleChartDrillDown] Target node not found: ${path}`);
+        return;
+    }
+
     // 检查是否需要加载子目录数据
-    const node = findNodeByPath(data!, path);
-    if (node && node.is_dir && !node.children) {
+    if (node.is_dir && !node.children) {
       setLoading(true);
       try {
         const result = await invoke<FileNode>("analyze_directory", { path });
@@ -916,9 +1028,15 @@ function App() {
           const sUpdates = new Map<string, StructureUpdate>();
           const zUpdates = new Map(pendingUpdates.current);
           if (zUpdates.size > 0) {
-              // const affected = getAffectedPaths([zUpdates]);
-              updatedNode = applyBatchUpdates(updatedNode, sUpdates, zUpdates, new Set(), true);
-          }
+                   // const affected = getAffectedPaths([zUpdates]);
+                   const appliedPaths = new Set<string>();
+                   updatedNode = applyBatchUpdates(updatedNode, sUpdates, zUpdates, new Set(), true, appliedPaths);
+                   
+                   // Clear applied from pendingUpdates
+                   for (const path of appliedPaths) {
+                      pendingUpdates.current.delete(path);
+                   }
+              }
           
           pendingUpdates.current.delete(normalizePathForMatch(path));
 
@@ -1254,9 +1372,8 @@ function App() {
                       loadingPaths={loadingPaths}
                       onToggleExpand={toggleExpand}
                       onContextMenu={handleContextMenu}
-                      t={t}
-                      numberLocale={numberLocale}
-                    />
+                    t={t}
+                  />
                   </motion.div>
                 ) : view === 'treemap' ? (
                   <motion.div

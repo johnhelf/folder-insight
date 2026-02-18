@@ -7,6 +7,7 @@ export interface FileNode {
   is_restricted: boolean;
   file_count: number;
   children: FileNode[] | null;
+  modified: number | null;
 }
 
 export interface SizeUpdate {
@@ -20,4 +21,12 @@ export interface SizeUpdate {
 export interface StructureUpdate {
   path: string;
   children: FileNode[];
+}
+
+export interface BatchStructureUpdate {
+  updates: StructureUpdate[];
+}
+
+export interface BatchSizeUpdate {
+  updates: SizeUpdate[];
 }

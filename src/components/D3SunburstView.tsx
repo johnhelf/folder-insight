@@ -19,15 +19,54 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
   const [hoverNode, setHoverNode] = useState<d3.HierarchyRectangularNode<EChartsNode> | null>(null);
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (tooltipRef.current && containerRef.current) {
+      const tooltip = tooltipRef.current;
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      // Determine quadrant
+      const isTop = y < rect.height / 2;
+      const isLeft = x < rect.width / 2;
+
+      // Position in opposite corner
+      // If mouse is Top-Left, tooltip goes Bottom-Right
+      tooltip.style.top = isTop ? 'auto' : '1rem';
+      tooltip.style.bottom = isTop ? '1rem' : 'auto';
+      tooltip.style.left = isLeft ? 'auto' : '1rem';
+      tooltip.style.right = isLeft ? '1rem' : 'auto';
+    }
+  };
+
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect;
+      setDimensions({ width, height });
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!data || !svgRef.current || !containerRef.current) return;
 
-    const width = containerRef.current.clientWidth;
-    const height = containerRef.current.clientHeight;
-    // Maximize chart size (0.98 padding)
-    const radius = Math.min(width, height) / 2 * 0.98;
+    // Use dimensions from state if available, otherwise fallback to current size
+    const width = dimensions.width || containerRef.current.clientWidth;
+    const height = dimensions.height || containerRef.current.clientHeight;
+    
+    if (width === 0 || height === 0) return;
+
+    // Maximize chart size (aggressive fit)
+    // We want to leave about 5% padding on top/bottom
+    // So 0.5 * 0.9 = 0.45 (which is 90% of the half-height, i.e., 5% margin on each side)
+    const radius = Math.min(width, height) * 0.45;
 
     // Clear previous
     const svg = d3.select(svgRef.current);
@@ -35,7 +74,7 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
 
     const g = svg
       .attr("viewBox", `${-width / 2} ${-height / 2} ${width} ${height}`)
-      .style("font", "12px sans-serif")
+      .style("font", "12px 'SimHei', 'Microsoft YaHei', sans-serif")
       .append("g");
 
     const hierarchy = d3.hierarchy(data)
@@ -69,7 +108,9 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
     
     // Limit max layers to consider for width calculation (don't make them too thin if depth > 7)
     // 限制最大层数计算 (如果深度 > 7，不让层级变得过薄)
-    const effectiveLayers = Math.min(Math.max(root.height, 1), 7);
+    // Fix: Use fixed layer count (7) to ensure consistent ring width and avoid visual jumping during navigation
+    // 修复：使用固定层数（7），确保圆环宽度一致，避免导航时的视觉跳动
+    const effectiveLayers = 7;
     
     // Available radius from 15% to 100% = 85%
     const layerWidth = 0.85 / effectiveLayers;
@@ -92,7 +133,7 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
       });
 
     // Draw arcs
-    const path = g.append("g")
+    g.append("g")
       .selectAll("path")
       // Show up to 7 levels as requested
       // Optimization: Filter out very small arcs (less than 0.005 radians) to improve performance
@@ -110,83 +151,217 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
       .on("click", (_event, d) => {
         if (d.depth === 0 && canGoUp && onGoUp) {
             onGoUp();
-        } else if (d.depth > 0 && d.data.isDir && onDrillDown) {
+        } else if (d.depth > 0 && d.data.isDir && onDrillDown && d.data.path) {
             onDrillDown(d.data.path);
         }
-      })
-      .on("mouseover", (event, d) => {
-        setHoverNode(d);
-        d3.select(event.currentTarget).attr("fill-opacity", 1);
       })
       .on("mouseout", (event, d) => {
         setHoverNode(null);
         if (d.depth > 0) {
             d3.select(event.currentTarget).attr("fill-opacity", 1 - (d.depth * 0.08));
         }
+      })
+      .on("mouseover", (event, d) => {
+        setHoverNode(d);
+        d3.select(event.currentTarget).attr("fill-opacity", 1);
       });
 
-    // Add titles (native tooltip)
-    path.append("title")
-      .text(d => `${d.ancestors().map(d => d.data.name).reverse().join("/")}\n${formatSize(d.value || 0)}`);
+    // --- External Labels with Lines (Spider Labels) ---
+    // Only label visible nodes with sufficient angular width, primarily leaves or outer-most
+    const labelThreshold = 0.02; // Reduced threshold (approx 1.1 degrees) to show more labels
+    
+    // Helper to check if a node has any children that are large enough to be labeled
+    const hasLabelableChildren = (d: d3.HierarchyRectangularNode<EChartsNode>) => {
+        if (!d.children || d.children.length === 0) return false;
+        return d.children.some(c => (c.x1 - c.x0) > labelThreshold);
+    };
 
-    // --- Internal Labels (Rotated) ---
-    // Only label nodes with sufficient angular width
-    g.append("g")
+    const labelData = root.descendants().filter(d => {
+        // Skip root and center
+        if (d.depth === 0) return false;
+        // Only visible layers
+        if (d.depth > 7) return false;
+        // Only large enough arcs
+        if ((d.x1 - d.x0) < labelThreshold) return false;
+        
+        // Priority logic:
+        // 1. Inner rings are prioritized (allow more labels or looser constraints?)
+        // 2. For each parent, only show the top N largest children.
+        
+        const parent = d.parent;
+        if (parent && parent.children) {
+            // Find rank among siblings based on value (size)
+            // Note: children are already sorted by value in d3.hierarchy setup if we used .sort()
+            // but let's be safe and find index in the current sorted children array
+            const siblings = parent.children; // Assuming this array is sorted by value descending
+            const rank = siblings.indexOf(d);
+            
+            // Define max labels per parent based on depth
+            // Inner rings (depth 1, 2) get more slots. Outer rings get fewer.
+            let maxLabelsPerParent = 3;
+            if (d.depth === 1) maxLabelsPerParent = 10;
+            else if (d.depth === 2) maxLabelsPerParent = 5;
+            
+            if (rank >= maxLabelsPerParent) return false;
+        }
+
+        // Show label if:
+        // 1. It is a leaf node (no children)
+        // 2. OR it is effectively a leaf for labeling purposes (no children big enough to be labeled)
+        // 3. OR it is at the max depth of the view
+        // This ensures that large groups of small files get a label at the parent folder level
+        return !hasLabelableChildren(d) || d.depth === 7;
+    });
+
+    const labelGroup = g.append("g")
         .attr("pointer-events", "none")
-        .selectAll("text")
-        .data(root.descendants().filter(d => d.depth > 0 && (d.x1 - d.x0) > 0.06)) // ~3.5 degrees
-        .join("text")
-        .attr("transform", function(d) {
-            const x = (d.x0 + d.x1) / 2 * 180 / Math.PI;
-            // y is unused, removed
-            // const y = (d.y0 + d.y1) / 2; 
-            // Actually, arc.centroid returns [x, y] in Cartesian.
-            // But for rotation we need angle.
-            const c = arc.centroid(d);
-            const rotate = x - 90;
-            // If angle is in bottom half (90 to 270), rotate 180 to be readable
-            const finalRotate = (x > 90 && x < 270) ? rotate + 180 : rotate;
-            return `translate(${c[0]},${c[1]}) rotate(${finalRotate})`;
+        .classed("labels", true);
+        
+    const linesGroup = g.append("g")
+        .attr("pointer-events", "none")
+        .classed("lines", true);
+
+    // Arc for label positioning (just outside the chart)
+    const labelArc = d3.arc<d3.HierarchyRectangularNode<EChartsNode>>()
+        .innerRadius(radius * 1.01)
+        .outerRadius(radius * 1.01)
+        .startAngle(d => d.x0)
+        .endAngle(d => d.x1);
+
+    // Compute positions with collision avoidance
+    const labels = labelData.map(d => {
+        const pos = labelArc.centroid(d);
+        const midAngle = (d.x0 + d.x1) / 2;
+        // True if right side
+        const isRight = Math.cos(midAngle - Math.PI / 2) > 0;
+        
+        // Base x/y
+        // We push labels to the far left/right
+        const x = radius * 1.03 * (isRight ? 1 : -1);
+        const y = pos[1];
+        
+        // Priority for label placement relaxation:
+        // Lower depth (closer to root) = Higher priority (should move less, or displace others)
+        // Larger arc = Higher priority
+        const priority = (10 - d.depth) * 100 + (d.x1 - d.x0) * 1000;
+
+        return {
+            node: d,
+            x,
+            y,
+            isRight,
+            posA: arc.centroid(d), // Inner anchor
+            posB: pos, // Outer anchor (pre-adjustment)
+            priority
+        };
+    });
+
+    // Simple 1D collision detection on y-axis for left and right groups independently
+    const relaxLabels = (items: typeof labels) => {
+        const spacing = 11; // Slightly looser to avoid clutter
+        // Sort by y to establish initial order
+        items.sort((a, b) => a.y - b.y);
+        
+        // Constrain within height limits to prevent cutoff
+        const maxY = height / 2 - 10;
+        const minY = -height / 2 + 10;
+        
+        // Iterative relaxation
+        for(let k=0; k<5; k++) {
+            for (let i = 0; i < items.length - 1; i++) {
+                const a = items[i];
+                const b = items[i+1];
+                if (b.y - a.y < spacing) {
+                    const overlap = spacing - (b.y - a.y);
+                    
+                    // Distribute overlap based on priority? 
+                    // Or just push apart equally for simplicity, as priority was used for selection.
+                    // Let's stick to equal push for stability, but maybe bias if we wanted.
+                    // For now, equal push.
+                    a.y -= overlap / 2;
+                    b.y += overlap / 2;
+                }
+            }
+            // Clamp to view bounds immediately
+            for (let item of items) {
+                 if (item.y > maxY) item.y = maxY;
+                 if (item.y < minY) item.y = minY;
+            }
+        }
+    };
+
+    const leftLabels = labels.filter(l => !l.isRight);
+    const rightLabels = labels.filter(l => l.isRight);
+    
+    relaxLabels(leftLabels);
+    relaxLabels(rightLabels);
+
+    // Draw lines
+    linesGroup.selectAll("polyline")
+        .data(labels)
+        .join("polyline")
+        .attr("points", d => {
+            const posA = d.posA;
+            const posB = d.posB; // Original outer anchor
+            const posC = [d.x, d.y]; // Adjusted label position
+            
+            return [posA, posB, posC].map(p => p.join(",")).join(" ");
         })
+        .attr("fill", "none")
+        .attr("stroke", "currentColor")
+        .attr("stroke-width", "1px")
+        .attr("opacity", 0.35);
+
+    // Draw text
+    labelGroup.selectAll("text")
+        .data(labels)
+        .join("text")
+        .attr("transform", d => `translate(${d.x},${d.y})`)
         .attr("dy", "0.35em")
-        .attr("text-anchor", "middle")
-        .attr("font-size", "11px")
-        .attr("fill", "#333") // Dark text for visibility on light/colored background
-        // Ideally adapt to background brightness, but standard dark grey is usually safe on pastel/saturated colors
-        // Except for very dark segments.
-        .style("text-shadow", "0 0 2px white") // Halo for readability
+        .style("text-anchor", d => d.isRight ? "start" : "end")
         .text(d => {
-            // Check arc length at inner radius
-            const innerR = radius * (0.15 + (d.depth - 1) * 0.12);
-            const arcLen = (d.x1 - d.x0) * innerR;
-            // Approx 6px per char
-            const maxChars = Math.floor(arcLen / 6);
-            if (maxChars < 3) return "";
-            return d.data.name.length > maxChars ? d.data.name.slice(0, maxChars) + ".." : d.data.name;
-        });
+            const name = d.node.data.name;
+            return name.length > 20 ? name.slice(0, 18) + "..." : name;
+        })
+        .attr("fill", "currentColor")
+        .style("font-size", "11px");
 
   }, [data, canGoUp]);
 
   return (
-    <div className="flex-1 min-h-0 relative w-full h-full" ref={containerRef}>
+    <div 
+      className="flex-1 min-h-0 relative w-full h-full" 
+      ref={containerRef}
+      onMouseMove={handleMouseMove}
+    >
       <svg ref={svgRef} width="100%" height="100%"></svg>
       
-      {/* Custom Tooltip Overlay */}
-      {hoverNode && (
-          <div 
-              className="absolute pointer-events-none bg-black/80 text-white text-xs p-2 rounded z-10 whitespace-pre"
-              style={{
-                  left: '50%',
-                  top: '50%',
-                  transform: 'translate(-50%, -50%)',
-                  textAlign: 'center'
-              }}
-          >
-              <div className="font-bold mb-1">{hoverNode.data.name}</div>
-              <div>{formatSize(hoverNode.value || 0)}</div>
-              {hoverNode.depth > 0 && <div className="text-gray-400 mt-1 text-[10px]">{hoverNode.data.path}</div>}
-          </div>
-      )}
+      {/* Smart Tooltip Overlay - Fixed Corner */}
+      {/* 始终显示在鼠标位置的对角，避免遮挡内容和被边缘裁切 */}
+      <div 
+          ref={tooltipRef}
+          className="absolute pointer-events-none bg-slate-900/60 text-white text-xs p-3 rounded-lg z-50 whitespace-normal shadow-xl border border-slate-700/50 backdrop-blur-xl backdrop-saturate-150"
+          style={{
+              display: hoverNode ? 'block' : 'none',
+              maxWidth: '320px',
+              transition: 'all 0.15s ease-out'
+          }}
+      >
+          {hoverNode && (
+            <div className="flex flex-col gap-1">
+              <div className="font-bold text-amber-400 text-sm truncate border-b border-slate-700 pb-1 mb-1">{hoverNode.data.name}</div>
+              <div className="flex justify-between items-center text-gray-300">
+                <span>Size:</span>
+                <span className="font-mono text-white">{formatSize(hoverNode.value || 0)}</span>
+              </div>
+              {hoverNode.depth > 0 && (
+                <div className="text-gray-500 mt-1 text-[10px] break-all leading-tight bg-slate-800/50 p-1 rounded">
+                  {hoverNode.data.path}
+                </div>
+              )}
+            </div>
+          )}
+      </div>
     </div>
   );
 };

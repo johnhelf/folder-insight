@@ -80,18 +80,34 @@ export const processForECharts = (
     
     // 增加保留数量，确保每层显示更多细节
     // Increase retention count to ensure more details per layer
-    const minItemsToShow = 20;
+    const minItemsToShow = 50;
+
+    // Track number of directories included to ensure we show enough structure
+    let includedDirCount = 0;
+    // Increase max directories to show to ensure deep structure is visible even in large folders
+    // 增加最大显示目录数，确保即使在大文件夹中也能看到深层结构
+    const maxDirsToShow = 500;
 
     validChildren.forEach((child, index) => {
       const childSize = child.size || 0;
+      // Use visual size for child too, so empty dirs (4KB) have a chance against small files
+      const childVisualSize = (childSize === 0 && child.is_dir) ? 4096 : childSize;
+      
       // 使用 visualSize 作为分母，避免除以 0
-      const ratio = childSize / (visualSize || 1);
+      const ratio = childVisualSize / (visualSize || 1);
       
       const isTopItem = index < minItemsToShow;
       const isSignificant = ratio >= thresholdRatio;
-      // 目录总是显示，除非它真的太小且不是 top item
-      // Dirs are always shown unless really small and not top item
-      const shouldShow = isTopItem || isSignificant || (child.is_dir && index < 30);
+      
+      let shouldShow = isTopItem || isSignificant;
+
+      // Special handling for directories: ensure we show up to maxDirsToShow directories
+      // regardless of their size or position in the sorted list.
+      // 特殊处理目录：确保显示多达 maxDirsToShow 个目录，无论其大小或在排序列表中的位置如何。
+      if (child.is_dir && includedDirCount < maxDirsToShow) {
+          shouldShow = true;
+          includedDirCount++;
+      }
 
       if (shouldShow) {
         const childNode = processForECharts(child, maxDepth, thresholdRatio, currentDepth + 1);

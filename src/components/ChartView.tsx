@@ -69,30 +69,34 @@ export const ChartView: React.FC<ChartViewProps> = ({
   };
   
   return (
-    <div className="p-4 md:p-8 h-full flex flex-col items-center relative w-full">
-      <div className="w-full flex items-center justify-between mb-2 shrink-0">
-        <div className="flex items-center gap-2">
+    <div className="p-0 h-full flex flex-col items-center relative w-full overflow-hidden">
+      {/* Floating Header & Controls */}
+      <div className="absolute top-4 left-0 w-full px-8 flex items-center justify-between z-10 pointer-events-none">
+        {/* Left: Title & Navigation */}
+        <div className="flex items-center gap-2 pointer-events-auto bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm p-1.5 rounded-lg shadow-sm border border-gray-200/50 dark:border-gray-700/50">
           {canGoUp && (
             <button
               onClick={onGoUp}
-              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors text-gray-600 dark:text-gray-400"
+              className="p-1.5 hover:bg-gray-200/50 dark:hover:bg-gray-700/50 rounded-md transition-colors text-gray-600 dark:text-gray-400"
               title={t('goUp')}
             >
-              <ChevronLeft size={20} />
+              <ChevronLeft size={18} />
             </button>
           )}
-          <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200">
+          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 px-1">
             {mode === 'breakdown' ? t('topTitle') : t('categoryStatsTitle')}
           </h3>
         </div>
-        <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
+
+        {/* Right: Mode Switcher */}
+        <div className="flex items-center gap-1 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm p-1 rounded-lg shadow-sm border border-gray-200/50 dark:border-gray-700/50 pointer-events-auto">
           <button
             onClick={() => setMode('breakdown')}
             className={cn(
               "px-3 py-1 text-xs rounded-md transition-all",
               mode === 'breakdown'
-                ? "bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 shadow-sm"
-                : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                ? "bg-blue-500 text-white shadow-sm"
+                : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
             )}
           >
             {t('chartModeBreakdown')}
@@ -102,8 +106,8 @@ export const ChartView: React.FC<ChartViewProps> = ({
             className={cn(
               "px-3 py-1 text-xs rounded-md transition-all",
               mode === 'category'
-                ? "bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 shadow-sm"
-                : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                ? "bg-blue-500 text-white shadow-sm"
+                : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
             )}
           >
             {t('chartModeCategory')}
@@ -111,7 +115,7 @@ export const ChartView: React.FC<ChartViewProps> = ({
         </div>
       </div>
 
-      <div className="w-full flex-1 min-h-0">
+      <div className="w-full h-full min-h-0 relative">
         {mode === 'breakdown' ? (
           <D3SunburstView 
             data={chartData} 

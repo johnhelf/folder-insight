@@ -14,9 +14,30 @@ export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
   const [hoverNode, setHoverNode] = useState<d3.HierarchyRectangularNode<EChartsNode> | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (tooltipRef.current && containerRef.current) {
+      const tooltip = tooltipRef.current;
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      // Determine quadrant
+      const isTop = y < rect.height / 2;
+      const isLeft = x < rect.width / 2;
+
+      // Position in opposite corner
+      // If mouse is Top-Left, tooltip goes Bottom-Right
+      tooltip.style.top = isTop ? 'auto' : '1rem';
+      tooltip.style.bottom = isTop ? '1rem' : 'auto';
+      tooltip.style.left = isLeft ? 'auto' : '1rem';
+      tooltip.style.right = isLeft ? '1rem' : 'auto';
+    }
+  };
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -106,17 +127,17 @@ export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
         "#38bdf8", // sky-400
     ];
 
-    // Dark Mode: Muted, deep tones. Not too bright, not too dark.
+    // Dark Mode: Adjusted to be less "deep/dull", slightly more vibrant but still dark-theme appropriate
     const refinedDark = [
-        "#334155", // slate-700
-        "#374151", // gray-700
-        "#3f3f46", // zinc-700
-        "#1e40af", // blue-800
-        "#3730a3", // indigo-800
-        "#5b21b6", // violet-800
-        "#6b21a8", // purple-800
-        "#115e59", // teal-800
-        "#075985", // sky-800
+        "#475569", // slate-600 (was 700)
+        "#4b5563", // gray-600 (was 700)
+        "#52525b", // zinc-600 (was 700)
+        "#2563eb", // blue-600 (was 800)
+        "#4f46e5", // indigo-600 (was 800)
+        "#7c3aed", // violet-600 (was 800)
+        "#9333ea", // purple-600 (was 800)
+        "#0d9488", // teal-600 (was 800)
+        "#0284c7", // sky-600 (was 800)
     ];
 
     const currentPalette = isDarkMode ? refinedDark : refinedLight;
@@ -135,8 +156,9 @@ export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
 
     // Render nodes
     // We render all nodes to show hierarchy borders
+    // Optimization: Filter out very small rectangles (less than 3x3 pixels) to significantly improve performance
+    // 优化：过滤掉非常小的矩形（小于 1x1 像素），大幅提升渲染性能
     // Optimization: Filter out very small rectangles (less than 1x1 pixels)
-    // 优化：过滤掉非常小的矩形（小于 1x1 像素），解决 Linux 下的卡顿问题
     const cell = g.selectAll("g")
       .data(root.descendants().filter(d => (d.x1 - d.x0) > 1 && (d.y1 - d.y0) > 1))
       .join("g")
@@ -260,24 +282,38 @@ export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
   }, [data, isDarkMode, dimensions]); // Re-run when dark mode or dimensions change
 
   return (
-    <div className="flex-1 min-h-0 relative w-full h-full" ref={containerRef}>
+    <div 
+      className="flex-1 min-h-0 relative w-full h-full" 
+      ref={containerRef}
+      onMouseMove={handleMouseMove}
+    >
       <svg ref={svgRef} width="100%" height="100%"></svg>
 
-      {hoverNode && (
-        <div 
-          className="absolute pointer-events-none bg-black/80 text-white text-xs p-2 rounded z-10 whitespace-pre"
+      {/* Smart Tooltip Overlay - Fixed Corner */}
+      <div 
+          ref={tooltipRef}
+          className="absolute pointer-events-none bg-slate-900/60 text-white text-xs p-3 rounded-lg z-50 whitespace-normal shadow-xl border border-slate-700/50 backdrop-blur-xl backdrop-saturate-150"
           style={{
-            left: '50%',
-            top: '50%',
-            transform: 'translate(-50%, -50%)',
-            textAlign: 'center'
+              display: hoverNode ? 'block' : 'none',
+              maxWidth: '320px',
+              transition: 'all 0.15s ease-out'
           }}
-        >
-          <div className="font-bold mb-1">{hoverNode.data.name}</div>
-          <div>{formatSize(hoverNode.value || 0)}</div>
-          <div className="text-gray-400 mt-1 text-[10px]">{hoverNode.data.path}</div>
-        </div>
-      )}
+      >
+          {hoverNode && (
+            <div className="flex flex-col gap-1">
+              <div className="font-bold text-amber-400 text-sm truncate border-b border-slate-700 pb-1 mb-1">{hoverNode.data.name}</div>
+              <div className="flex justify-between items-center text-gray-300">
+                <span>Size:</span>
+                <span className="font-mono text-white">{formatSize(hoverNode.value || 0)}</span>
+              </div>
+              {hoverNode.depth > 0 && (
+                <div className="text-gray-500 mt-1 text-[10px] break-all leading-tight bg-slate-800/50 p-1 rounded">
+                  {hoverNode.data.path}
+                </div>
+              )}
+            </div>
+          )}
+      </div>
     </div>
   );
 };
