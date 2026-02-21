@@ -11,10 +11,12 @@ import {
   HardDrive, 
   Files, 
   Heart,
-  RefreshCw
+  RefreshCw,
+  PieChart
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { formatSize, cn, isTauri, isMacOS } from "./utils";
+import { formatSize, cn, isTauri, isMacOS, isWindows } from "./utils";
+import { version } from "../package.json";
 import {
   createTranslator,
   detectSystemLocale,
@@ -24,15 +26,22 @@ import {
   resolveLocale,
   type LanguageMode,
 } from "./i18n";
-import { processForECharts } from "./chartHelpers";
-import { FileNode, SizeUpdate, StructureUpdate, BatchStructureUpdate, BatchSizeUpdate } from "./types";
+import { processForSunburst, processForTreemap } from './chartHelpers';
+import { FileNode, SizeUpdate, StructureUpdate, BatchStructureUpdate, BatchSizeUpdate, DiskStats } from "./types";
 import { SponsorModal } from "./components/SponsorModal";
+import { RateModal } from "./components/RateModal";
 import { TreeView } from "./components/TreeView";
 // import { ChartView } from "./components/ChartView";
 // import { TreemapView } from "./components/TreemapView";
 
 const ChartView = lazy(() => import("./components/ChartView").then(module => ({ default: module.ChartView })));
 const TreemapView = lazy(() => import("./components/TreemapView").then(module => ({ default: module.TreemapView })));
+const FileTypeView = lazy(() => import("./components/FileTypeView").then(module => ({ default: module.FileTypeView })));
+
+interface ProgressUpdate {
+  scanned_count: number;
+  current_path: string;
+}
 
 /**
  * 应用主组件：展示目录树与统计信息，并监听后端实时大小更新。
@@ -41,8 +50,10 @@ const TreemapView = lazy(() => import("./components/TreemapView").then(module =>
 function App() {
   const [data, setData] = useState<FileNode | null>(null);
   const [loading, setLoading] = useState(false);
+  const [diskStats, setDiskStats] = useState<DiskStats | null>(null);
+  const [scanProgress, setScanProgress] = useState<ProgressUpdate | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<'tree' | 'chart' | 'treemap'>('tree');
+  const [view, setView] = useState<'tree' | 'chart' | 'treemap' | 'fileType'>('tree');
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
   const [isDragActive, setIsDragActive] = useState(false);
@@ -51,6 +62,7 @@ function App() {
   const [systemLocale, setSystemLocale] = useState(detectSystemLocale());
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isSponsorModalOpen, setIsSponsorModalOpen] = useState(false);
+  const [isRateModalOpen, setIsRateModalOpen] = useState(false);
   const [sizeMetric, setSizeMetric] = useState<'logical' | 'allocated'>('logical');
   const [isReceivingUpdates, setIsReceivingUpdates] = useState(false);
   // const [isRealtimePaused, setIsRealtimePaused] = useState(false); // 移除暂停功能 / Remove pause feature
@@ -60,6 +72,7 @@ function App() {
   const isUpdateScheduled = useRef(false);
   // const pausedUpdates = useRef<Map<string, SizeUpdate>>(new Map());
   const needsSort = useRef(false);
+  const isRefreshing = useRef(false); // Flag to pause updates during refresh
 
   // 定时排序逻辑：每5秒检查是否需要排序
   // Interval sorting logic: check every 5s if sorting is needed
@@ -78,28 +91,79 @@ function App() {
     return () => clearInterval(intervalId);
   }, []);
 
-  // 赞助弹窗自动弹出逻辑 / Auto-show sponsor modal logic
+  // 监听扫描进度
+  // Listen for scan progress
   useEffect(() => {
-    const SPONSOR_KEY = 'last_sponsor_show_time';
-    const FIRST_RUN_KEY = 'has_run_before';
-    const SHOW_INTERVAL = 7 * 24 * 60 * 60 * 1000; // 每7天弹出一次 / Show every 7 days
+    if (!isTauri()) return;
+    const unlistenPromise = listen<ProgressUpdate>('scan-progress', (event) => {
+        setScanProgress(event.payload);
+    });
+    return () => {
+        unlistenPromise.then(unlisten => unlisten());
+    };
+  }, []);
+
+  // 弹窗自动弹出逻辑 (赞助 & 评分) / Auto-show modal logic (Sponsor & Rate)
+  useEffect(() => {
+    if (!isTauri()) return;
 
     const now = Date.now();
-    const hasRunBefore = localStorage.getItem(FIRST_RUN_KEY);
-    const lastShowTime = localStorage.getItem(SPONSOR_KEY);
+    const FIRST_RUN_TIME_KEY = 'first_run_time';
+    const HAS_SHOWN_SPONSOR_KEY = 'has_shown_sponsor_modal';
+    const HAS_SHOWN_RATE_KEY = 'has_shown_rate_modal';
+    const LAST_MODAL_SHOW_TIME_KEY = 'last_modal_show_time';
+    
+    // 首次运行时间 / First run time
+    let firstRunTime = parseInt(localStorage.getItem(FIRST_RUN_TIME_KEY) || '0', 10);
+    if (firstRunTime === 0) {
+      firstRunTime = now;
+      localStorage.setItem(FIRST_RUN_TIME_KEY, now.toString());
+    }
 
-    if (!hasRunBefore) {
-      // 首次安装运行：记录状态，但不弹出
-      // First run: mark as run but don't show
-      localStorage.setItem(FIRST_RUN_KEY, 'true');
-      localStorage.setItem(SPONSOR_KEY, now.toString());
-    } else {
-      // 非首次运行：检查间隔时间
-      // Not first run: check interval
-      const lastTime = lastShowTime ? parseInt(lastShowTime, 10) : 0;
-      if (now - lastTime > SHOW_INTERVAL) {
-        setIsSponsorModalOpen(true);
-        localStorage.setItem(SPONSOR_KEY, now.toString());
+    // 检查是否满足3天等待期 / Check 3-day delay
+    // 3 days = 3 * 24 * 60 * 60 * 1000 ms
+    if (now - firstRunTime < 3 * 24 * 60 * 60 * 1000) {
+      return;
+    }
+
+    const hasShownSponsor = localStorage.getItem(HAS_SHOWN_SPONSOR_KEY) === 'true';
+    const hasShownRate = localStorage.getItem(HAS_SHOWN_RATE_KEY) === 'true';
+
+    // 如果两个都显示过了，就不再显示 / If both shown, stop
+    if (hasShownSponsor && hasShownRate) {
+      return;
+    }
+
+    // 检查距离上次弹窗的时间，确保不会连续弹出（至少间隔1天）
+    // Check time since last modal to avoid consecutive popups (at least 1 day gap)
+    const lastModalShowTime = parseInt(localStorage.getItem(LAST_MODAL_SHOW_TIME_KEY) || '0', 10);
+    if (now - lastModalShowTime < 24 * 60 * 60 * 1000) {
+      return;
+    }
+
+    // 互斥检查 / Mutex check
+    if (isSponsorModalOpen || isRateModalOpen) {
+      return;
+    }
+
+    // 决定显示哪一个 / Decide which to show
+    // 逻辑：交替显示。先赞助，后评分。
+    // Logic: Alternate. Sponsor first, then Rate.
+    
+    if (!hasShownSponsor) {
+      setIsSponsorModalOpen(true);
+      localStorage.setItem(HAS_SHOWN_SPONSOR_KEY, 'true');
+      localStorage.setItem(LAST_MODAL_SHOW_TIME_KEY, now.toString());
+    } else if (!hasShownRate) {
+      // 评分弹窗仅限Windows / Rate modal Windows only
+      if (isWindows()) {
+        setIsRateModalOpen(true);
+        localStorage.setItem(HAS_SHOWN_RATE_KEY, 'true');
+        localStorage.setItem(LAST_MODAL_SHOW_TIME_KEY, now.toString());
+      } else {
+        // 非Windows系统，标记为已显示，以免下次还尝试显示
+        // Non-Windows, mark as shown to avoid retry
+        localStorage.setItem(HAS_SHOWN_RATE_KEY, 'true');
       }
     }
   }, []);
@@ -236,6 +300,8 @@ function App() {
    * 批量应用更新（结构和大小），通过单次遍历树实现 O(N) 复杂度。
    * Batch apply updates (structure and size) with single tree traversal O(N).
    * 优化：只遍历受影响的路径 / Optimization: Only traverse affected paths
+   * 
+   * NEW: Supports auto-vivification of missing child nodes based on structure updates.
    */
   const applyBatchUpdates = (
     node: FileNode,
@@ -243,14 +309,28 @@ function App() {
     sizeUpdates: Map<string, SizeUpdate>,
     affectedPaths: Set<string>,
     _isRoot: boolean = false,
-    appliedPaths: Set<string>
+    appliedPaths: Set<string>,
+    // Optional index for faster lookups of children updates
+    updatesByParent?: Map<string, string[]> 
   ): FileNode => {
     const normalizedPath = normalizePathForMatch(node.path);
     
     // Debugging: Log path matching for root or first level children to verify normalization
-    // 调试：记录根节点或第一层子节点的路径匹配情况，验证标准化逻辑
     if (_isRoot && structureUpdates.size > 0) {
         // console.log(`[applyBatchUpdates] Root path: ${normalizedPath}. Pending structure updates: ${structureUpdates.size}`);
+    }
+
+    // Optimization: Skip if path is not affected (and we are not forcing full update with empty set)
+    // BUT: If we have pending child updates for this node (even if node itself is not marked affected), we must process it!
+    // The "affectedPaths" set might not contain the parent if only the child was updated.
+    // So we need to check updatesByParent too.
+    let hasPendingChildUpdates = false;
+    if (updatesByParent && updatesByParent.has(normalizedPath)) {
+        hasPendingChildUpdates = true;
+    }
+
+    if (affectedPaths.size > 0 && !affectedPaths.has(normalizedPath) && !hasPendingChildUpdates) {
+        return node;
     }
 
     let newNode = node;
@@ -269,21 +349,49 @@ function App() {
       const mergedChildren = newChildren.map(newChild => {
         const prevChild = prevChildrenMap.get(normalizePathForMatch(newChild.path));
         if (prevChild) {
-          // If the child already exists, preserve its children and stats
-          // Structure updates from backend often have empty stats for directories (size: null, etc.)
-          // We must not overwrite existing calculated stats with null/empty values.
+          // 如果新节点有子节点（通常是浅层的），我们需要递归合并旧节点的子节点（深层的）
+          // If newChild has children (usually shallow), we need to recursively merge old children (deep)
+          let finalChildren = newChild.children;
+          
+          if (newChild.children && newChild.children.length > 0) {
+             // 新节点有子节点列表，我们需要保留其中匹配到的旧子节点的深层结构
+             // New node has children list, we must preserve deep structure of matched old children
+             const oldGrandChildrenMap = new Map((prevChild.children || []).map(c => [normalizePathForMatch(c.path), c]));
+             
+             finalChildren = newChild.children.map(grandChild => {
+                 const oldGrandChild = oldGrandChildrenMap.get(normalizePathForMatch(grandChild.path));
+                 if (oldGrandChild) {
+                     // 递归保留孙节点的子节点和统计数据
+                     // Recursively preserve grandchildren's children and stats
+                     return {
+                         ...grandChild,
+                         children: (grandChild.children && grandChild.children.length > 0) ? grandChild.children : oldGrandChild.children,
+                         // Heuristic: if new size is 0 and old size > 0, keep old size
+                         size: (grandChild.size === 0 && (oldGrandChild.size || 0) > 0) ? oldGrandChild.size : (grandChild.size ?? oldGrandChild.size),
+                         allocated_size: grandChild.allocated_size ?? oldGrandChild.allocated_size,
+                         file_count: (grandChild.is_dir && !grandChild.file_count) ? oldGrandChild.file_count : grandChild.file_count,
+                         is_restricted: grandChild.is_restricted || oldGrandChild.is_restricted,
+                         modified: grandChild.modified ?? oldGrandChild.modified,
+                     };
+                 }
+                 return grandChild;
+             });
+          } else {
+             // 新节点没有子节点（或为空），直接保留旧子节点
+             // New node has no children, keep old children
+             finalChildren = prevChild.children;
+          }
+
           return {
             ...newChild,
-            // Preserve deep structure
-            // 修复：防止空数组覆盖已有的子节点数据
-            // Fix: prevent empty array from overwriting existing children data
-            children: (newChild.children && newChild.children.length > 0) ? newChild.children : prevChild.children,
-            // Preserve calculated stats if newChild doesn't have them (e.g. it's a directory entry from a structure scan)
-            size: newChild.size ?? prevChild.size,
+            children: finalChildren,
+            // Preserve calculated stats if newChild doesn't have them
+            // Heuristic: if new size is 0 and old size > 0, keep old size
+            size: (newChild.size === 0 && (prevChild.size || 0) > 0) ? prevChild.size : (newChild.size ?? prevChild.size),
             allocated_size: newChild.allocated_size ?? prevChild.allocated_size,
-            // Preserve file_count for directories (Rust sends 0 for dirs in structure update)
             file_count: (newChild.is_dir && !newChild.file_count) ? prevChild.file_count : newChild.file_count,
             is_restricted: prevChild.is_restricted || newChild.is_restricted,
+            modified: newChild.modified ?? prevChild.modified,
           };
         }
         return newChild;
@@ -292,13 +400,62 @@ function App() {
       newNode = { ...newNode, children: mergedChildren };
     }
 
+    // 1.5. Auto-vivify missing children based on updatesByParent
+    // This handles the case where a child update arrives BEFORE the parent update, or parent update is missing.
+    if (updatesByParent && updatesByParent.has(normalizedPath)) {
+        const childPaths = updatesByParent.get(normalizedPath)!;
+        const currentChildrenMap = new Map((newNode.children || []).map(c => [normalizePathForMatch(c.path), c]));
+        let childrenModified = false;
+        
+        const newChildrenList = [...(newNode.children || [])];
+
+        for (const childPath of childPaths) {
+            if (!currentChildrenMap.has(childPath)) {
+                // This child is missing! Create a placeholder.
+                // We need the name. Extract from path.
+                // normalizedPath uses '/'
+                const lastSlash = childPath.lastIndexOf('/');
+                const name = lastSlash !== -1 ? childPath.substring(lastSlash + 1) : childPath;
+                
+                // Try to find the original raw path from the update to be correct with separators if possible
+                // But structureUpdates keys are normalized. We can check the update object itself if it exists.
+                const update = structureUpdates.get(childPath);
+                const rawPath = update ? update.path : childPath; // Fallback
+                const rawName = update ? (update.path.split(/[/\\]/).pop() || name) : name;
+
+                const placeholderChild: FileNode = {
+                    name: rawName,
+                    path: rawPath,
+                    is_dir: true, // It has structure update, so it must be a dir
+                    children: [],
+                    size: 0,
+                    file_count: 0,
+                    is_restricted: false,
+                    modified: null,
+                    allocated_size: null
+                };
+
+                newChildrenList.push(placeholderChild);
+                currentChildrenMap.set(childPath, placeholderChild); // Update map for subsequent checks
+                childrenModified = true;
+                
+                // console.log(`[applyBatchUpdates] Auto-vivified missing child: ${rawPath} under ${newNode.path}`);
+            }
+        }
+
+        if (childrenModified) {
+            newNode = { ...newNode, children: newChildrenList };
+        }
+    }
+
     // 2. 应用大小更新 / Apply size update
     if (sizeUpdates.has(normalizedPath)) {
       appliedPaths.add(normalizedPath); // Mark as applied
       const update = sizeUpdates.get(normalizedPath)!;
       newNode = {
         ...newNode,
-        size: update.size,
+        // Heuristic: if new size is 0 and old size > 0, keep old size to prevent flashing
+        size: (update.size === 0 && (newNode.size || 0) > 0) ? newNode.size : update.size,
         allocated_size: update.allocated_size,
         is_restricted: update.is_restricted,
         file_count: update.file_count,
@@ -310,9 +467,9 @@ function App() {
 
     let childrenChanged = false;
     const newChildren = newNode.children.map(child => {
-      // 这里的 affectedPaths 参数已经不再被使用，但为了兼容性保留
-      // affectedPaths parameter is unused now but kept for compatibility
-      const newChild = applyBatchUpdates(child, structureUpdates, sizeUpdates, affectedPaths, false, appliedPaths);
+      // 移除剪枝优化，确保所有受影响的子节点都能更新
+      // Remove pruning optimization to ensure all affected children are updated
+      const newChild = applyBatchUpdates(child, structureUpdates, sizeUpdates, affectedPaths, false, appliedPaths, updatesByParent);
       if (newChild !== child) childrenChanged = true;
       return newChild;
     });
@@ -325,40 +482,72 @@ function App() {
   };
 
   /**
+   * Helper to index updates by their parent path for O(1) lookup
+   * Enhanced: Recursively builds parent-child mapping up to the root to ensure
+   * deep paths can be auto-vivified even if intermediate parents are missing in the update batch.
+   */
+  const buildUpdatesByParent = (structureUpdates: Map<string, StructureUpdate>): Map<string, string[]> => {
+    const map = new Map<string, Set<string>>();
+    
+    for (const path of structureUpdates.keys()) {
+        let currentPath = path;
+        
+        // Walk up the path and register all parent->child relationships
+        // This ensures that if we have an update for A/B/C, we also ensure A knows about B, 
+        // even if there is no explicit update for B.
+        while (true) {
+            const lastSlash = currentPath.lastIndexOf('/');
+            if (lastSlash === -1) break;
+            
+            const parentPath = currentPath.substring(0, lastSlash);
+            if (!parentPath) break; // Stop at root if empty (or handle "C:" case)
+            
+            if (!map.has(parentPath)) {
+                map.set(parentPath, new Set());
+            }
+            map.get(parentPath)!.add(currentPath);
+            
+            // Move up one level
+            currentPath = parentPath;
+        }
+    }
+    
+    // Convert Sets to Arrays
+    const result = new Map<string, string[]>();
+    for (const [k, v] of map) {
+        result.set(k, Array.from(v));
+    }
+    return result;
+  };
+
+  /**
    * 生成所有受影响路径及其祖先路径的集合
    * Generate set of all affected paths and their ancestors
    */
-  // const getAffectedPaths = (updatesList: Map<string, any>[]): Set<string> => {
-  //   const affected = new Set<string>();
-  //   updatesList.forEach(map => {
-  //     for (const rawPath of map.keys()) {
-  //       // 确保使用统一的标准化逻辑
-  //       // Ensure consistent normalization
-  //       let current = normalizePathForMatch(rawPath);
-  //       
-  //       affected.add(current);
-  //       
-  //       // 向上遍历添加所有祖先 / Traverse up to add all ancestors
-  //       while (true) {
-  //         const lastSlash = current.lastIndexOf('/');
-  //         if (lastSlash === -1) break;
-  //         
-  //         current = current.substring(0, lastSlash);
-  //         
-  //         // 避免添加空字符串（如果路径是 /foo，substring(0,0) 是空）
-  //         // Avoid adding empty string
-  //         if (current.length > 0) {
-  //           affected.add(current);
-  //         } else {
-  //           // 如果是根路径 "/"，可能需要根据具体逻辑处理，但在 Windows 上通常是 "c:"
-  //           // If root path "/", handled differently, but on Windows usually "c:"
-  //           break; 
-  //         }
-  //       }
-  //     }
-  //   });
-  //   return affected;
-  // };
+  const getAffectedPaths = (updatesList: Map<string, any>[]): Set<string> => {
+    const affected = new Set<string>();
+    updatesList.forEach(map => {
+      for (const rawPath of map.keys()) {
+        // rawPath is already normalized because keys are normalized
+        let current = rawPath;
+        affected.add(current);
+        
+        while (true) {
+          const lastSlash = current.lastIndexOf('/');
+          if (lastSlash === -1) break;
+          
+          current = current.substring(0, lastSlash);
+          
+          if (current.length > 0) {
+            affected.add(current);
+          } else {
+            break; 
+          }
+        }
+      }
+    });
+    return affected;
+  };
 
   /**
    * 统一触发分析流程：清理状态并调用后端 analyze_directory。
@@ -376,8 +565,17 @@ function App() {
       setContextMenu(null);
       setExpandedPaths(new Set());
       setLoadingPaths(new Set());
+      setScanProgress(null);
+      setDiskStats(null);
 
-      const result = await invoke<FileNode>("analyze_directory", { path });
+      const [result, stats] = await Promise.all([
+          invoke<FileNode>("analyze_directory", { path }),
+          invoke<DiskStats | null>("get_disk_stats", { path }).catch(e => {
+              console.error("Failed to get disk stats:", e);
+              return null;
+          })
+      ]);
+      setDiskStats(stats);
       
       // 应用加载期间积累的所有更新
       // Apply all updates accumulated during loading
@@ -390,10 +588,13 @@ function App() {
       // Use applyBatchUpdates for batch processing to ensure correct merging
       if (sUpdates.size > 0 || zUpdates.size > 0) {
         // const affected = getAffectedPaths([sUpdates, zUpdates]);
-        // console.log(`[analyzePath] Applying updates. Affected paths: ${affected.size}`);
-        console.log(`[analyzePath] Applying updates. Structure: ${sUpdates.size}, Size: ${zUpdates.size}`);
+        // 暂时禁用 affectedPaths 优化，传入空 Set 以强制全量更新
+        // Temporarily disable affectedPaths optimization, pass empty Set to force full update
+        const affected = new Set<string>(); 
+        // console.log(`[analyzePath] Applying updates. Structure: ${sUpdates.size}, Size: ${zUpdates.size}`);
         const appliedPaths = new Set<string>();
-        updatedResult = applyBatchUpdates(updatedResult, sUpdates, zUpdates, new Set(), true, appliedPaths);
+        const updatesByParent = buildUpdatesByParent(sUpdates);
+        updatedResult = applyBatchUpdates(updatedResult, sUpdates, zUpdates, affected, true, appliedPaths, updatesByParent);
         
         // Remove applied
         for (const path of appliedPaths) {
@@ -401,7 +602,7 @@ function App() {
             pendingUpdates.current.delete(path);
         }
       } else {
-        console.log(`[analyzePath] No pending updates to apply.`);
+        // console.log(`[analyzePath] No pending updates to apply.`);
       }
       
       // pendingStructureUpdates.current.clear();
@@ -465,126 +666,88 @@ function App() {
   }, []);
 
 
+  // 调度更新：如果这是第一个待处理的更新（无论是结构还是大小），则设置定时器
+  // Schedule update: if this is the first pending update (structure or size), set timeout
+  const scheduleUpdate = useCallback(() => {
+    if (isUpdateScheduled.current) return;
+    isUpdateScheduled.current = true;
+
+    // 每 500ms 更新一次，避免界面过于频繁跳动但保持响应感
+    // Update every 500ms to avoid too much flickering but keep it responsive
+    setTimeout(() => {
+      isUpdateScheduled.current = false;
+      
+      setData((prev) => {
+        // 如果还没有数据（例如正在初始加载），则不处理更新，保留在 pendingUpdates 中
+        // If no data (e.g. initial loading), skip update processing, keep in pendingUpdates
+        if (!prev) {
+          return null;
+        }
+
+        // 如果正在刷新，暂停更新处理，让 pendingUpdates 积累
+        // If refreshing, pause update processing, let pendingUpdates accumulate
+        if (isRefreshing.current) {
+          return prev;
+        }
+
+        // IMPORTANT: Read refs inside setData to ensure we handle current state
+        // 创建更新 Map 的快照
+        const sUpdates = new Map(pendingStructureUpdates.current);
+        const zUpdates = new Map(pendingUpdates.current);
+        
+        if (sUpdates.size === 0 && zUpdates.size === 0) {
+          return prev;
+        }
+
+        console.log(`Processing batch updates: ${sUpdates.size} structure, ${zUpdates.size} size`);
+        
+        const affected = getAffectedPaths([sUpdates, zUpdates]);
+        // Temporarily disable affectedPaths optimization to ensure full data consistency
+        // const affected = new Set<string>();
+        const appliedPaths = new Set<string>();
+        const updatesByParent = buildUpdatesByParent(sUpdates);
+        const updatedTree = applyBatchUpdates(prev, sUpdates, zUpdates, affected, true, appliedPaths, updatesByParent);
+        
+        // Remove processed updates from refs (whether applied or not/orphaned)
+        // This prevents the "Calculating..." loop for updates that cannot be applied (e.g. missing parent)
+        // appliedPaths tracks successfully applied updates.
+        // But for orphans, we must also clear them to avoid infinite retries.
+        
+        // Strategy: Clear ALL updates that were in the current batch.
+        // If they were not applied, it means they are orphans or invalid for current tree state.
+        // Keeping them causes infinite "Calculating..." state.
+        
+        for (const [path] of sUpdates) {
+           pendingStructureUpdates.current.delete(path);
+        }
+        for (const [path] of zUpdates) {
+           pendingUpdates.current.delete(path);
+        }
+        
+        // Log remaining (unapplied) updates count
+        if (pendingStructureUpdates.current.size > 0 || pendingUpdates.current.size > 0) {
+            console.log(`[scheduleUpdate] Unapplied updates retained: ${pendingStructureUpdates.current.size} structure, ${pendingUpdates.current.size} size`);
+        }
+
+        console.log(`[scheduleUpdate] Processed batch. Applied ${appliedPaths.size} updates.`);
+        
+        // Remove retry loop to prevent infinite processing of orphans
+        /*
+        if (pendingStructureUpdates.current.size > 0) {
+            console.log(`[scheduleUpdate] Retrying remaining ${pendingStructureUpdates.current.size} structure updates in 200ms...`);
+            setTimeout(() => scheduleUpdate(), 200);
+        }
+        */
+        
+        // 只有在数据真正变化时才重新排序
+        // Only resort if data changed
+        return sortTreeRecursive(updatedTree); 
+      });
+    }, 500);
+  }, []);
+
   useEffect(() => {
     if (!isTauri()) return;
-
-    // 调度更新：如果这是第一个待处理的更新（无论是结构还是大小），则设置定时器
-    // Schedule update: if this is the first pending update (structure or size), set timeout
-    const scheduleUpdate = () => {
-      if (isUpdateScheduled.current) return;
-      isUpdateScheduled.current = true;
-
-      // 每 500ms 更新一次，避免界面过于频繁跳动但保持响应感
-      // Update every 500ms to avoid too much flickering but keep it responsive
-      setTimeout(() => {
-        isUpdateScheduled.current = false;
-        
-        setData((prev) => {
-          // 如果还没有数据（例如正在初始加载），则不处理更新，保留在 pendingUpdates 中
-          // If no data (e.g. initial loading), skip update processing, keep in pendingUpdates
-          if (!prev) {
-            return null;
-          }
-
-          // IMPORTANT: Read refs inside setData to ensure we handle current state
-          // 创建更新 Map 的快照
-          const sUpdates = new Map(pendingStructureUpdates.current);
-          const zUpdates = new Map(pendingUpdates.current);
-          
-          if (sUpdates.size === 0 && zUpdates.size === 0) {
-            return prev;
-          }
-
-          console.log(`Processing batch updates: ${sUpdates.size} structure, ${zUpdates.size} size`);
-          
-          // 3. 关键修复：不再清空所有 pendingUpdates！
-          //    只在 applyBatchUpdates 返回后，根据实际被应用的 updates 来清理？
-          //    或者，在 applyBatchUpdates 中返回“未被应用的 updates”？
-          //    
-          //    由于 React 状态更新是异步的，我们不能轻易知道哪些 updates 被应用了。
-          //    但是，我们的 applyBatchUpdates 是同步遍历整个树。
-          //    如果树中不存在该节点，则 update 不会被应用。
-          //    
-          //    为了简单且安全：
-          //    我们将 pendingUpdates 清空，但在 applyBatchUpdates 中，如果遇到未应用的 updates，我们需要重新放回 pendingUpdates？
-          //    不，这样太复杂。
-          //
-          //    更好的策略：
-          //    每次只清空 pendingStructureUpdates（因为结构更新通常是添加新节点，一旦添加就不需要了）。
-          //    对于 pendingUpdates (Size)，我们需要确保它们的目标节点存在。
-          //    
-          //    如果结构更新先于大小更新到达，那么结构更新会创建节点，大小更新随后应用。
-          //    如果大小更新先于结构更新到达（或者同时到达但处理顺序问题），
-          //    applyBatchUpdates 会先处理结构更新（创建节点），再处理大小更新。
-          //    
-          //    唯一的问题是：如果结构更新 **缺失**（例如网络丢包，或者逻辑错误），那么大小更新就永远找不到节点。
-          //    
-          //    但是，如果结构更新在 pendingStructureUpdates 中，它一定会被应用（只要父节点存在）。
-          //    如果父节点也不存在？那说明祖先的结构更新也没到。
-          //    
-          //    所以，只要我们保证 pendingStructureUpdates 和 pendingUpdates 一起传给 applyBatchUpdates，
-          //    并且 applyBatchUpdates 先应用结构，再应用大小，这就应该没问题。
-          //    
-          //    除非：applyBatchUpdates 的遍历逻辑有漏洞，导致某些节点被跳过。
-          //    
-          //    之前的逻辑是：pendingUpdates.current.clear()。
-          //    这假设所有 updates 都能在当前这一轮被应用。
-          //    如果当前树中确实没有这个节点（比如结构更新还没来），那这个 size update 就丢了。
-          //    
-          //    修复方案：
-          //    引入一个机制，记录哪些 path 被成功更新了。
-          //    或者，简单地：不清除 pendingUpdates，除非确认节点已存在？
-          //    
-          //    但这会导致 pendingUpdates 无限膨胀。
-          //    
-          //    折衷方案：
-          //    给 pendingUpdates 设置一个 TTL？或者重试次数？
-          //    
-          //    让我们回看 applyBatchUpdates。它遍历整个树。
-          //    如果 sizeUpdates 包含 "A/B"，但树里只有 "A"，且 structureUpdates 不包含 "A/B"。
-          //    那么 "A/B" 的 size update 无法应用。
-          //    这种情况发生于：SizeUpdate(B) 到了，但 StructureUpdate(B) 还没到。
-          //    
-          //    此时，我们应该 **保留** SizeUpdate(B) 在 pendingUpdates 中！
-          //    
-          //    Implementation:
-          //    1. Pass a set to applyBatchUpdates to collect "applied paths".
-          //    2. After applyBatchUpdates, clear only the applied paths from pendingUpdates.current.
-          
-          const appliedPaths = new Set<string>();
-          const updatedTree = applyBatchUpdates(prev, sUpdates, zUpdates, new Set(), true, appliedPaths);
-          
-          // 清理已应用的结构更新
-          // Clear applied structure updates
-          // Structure updates are generally "one-off", if applied, clear.
-          // If not applied (parent missing), should we keep them?
-          // Yes, same logic applies to structure updates!
-          // If we receive Structure(GrandChild) but not Structure(Child), GrandChild cannot be added.
-          
-          // Let's modify applyBatchUpdates to track applied structure updates too?
-          // Actually, if we just keep everything that wasn't applied, it's safer.
-          
-          // Update: applyBatchUpdates now takes `appliedPaths` set.
-          
-          // Remove applied updates from refs
-          for (const path of appliedPaths) {
-             pendingStructureUpdates.current.delete(path);
-             pendingUpdates.current.delete(path);
-          }
-          
-          // Log remaining (unapplied) updates count
-          if (pendingStructureUpdates.current.size > 0 || pendingUpdates.current.size > 0) {
-              console.log(`[scheduleUpdate] Unapplied updates retained: ${pendingStructureUpdates.current.size} structure, ${pendingUpdates.current.size} size`);
-          }
-
-          console.log(`[scheduleUpdate] Applied ${appliedPaths.size} updates.`);
-          
-          // 只有在数据真正变化时才重新排序
-          // Only resort if data changed
-          return sortTreeRecursive(updatedTree); 
-        });
-      }, 500);
-    };
 
     const markUpdating = () => {
       setIsReceivingUpdates(true);
@@ -745,56 +908,11 @@ function App() {
   const handleRefresh = async () => {
     if (!isTauri() || !data) return;
     const targetPath = currentViewPath ?? data.path;
-    try {
-      setLoading(true);
-      const result = await invoke<FileNode>("analyze_directory", { path: targetPath });
-
-      // 应用加载期间积累的所有更新，避免被浅层扫描覆盖
-      // Apply all updates accumulated during loading to avoid overwriting with shallow scan
-      let updatedResult = result;
-      const sUpdates = new Map(pendingStructureUpdates.current);
-      const zUpdates = new Map(pendingUpdates.current);
-      
-      console.log(`[handleRefresh] Structure updates: ${sUpdates.size}, Size updates: ${zUpdates.size}`);
-      if (sUpdates.size > 0 || zUpdates.size > 0) {
-        // const affected = getAffectedPaths([sUpdates, zUpdates]);
-        const appliedPaths = new Set<string>();
-        updatedResult = applyBatchUpdates(updatedResult, sUpdates, zUpdates, new Set(), true, appliedPaths);
-        
-        // Clear applied updates from refs
-        for (const path of appliedPaths) {
-            pendingStructureUpdates.current.delete(path);
-            pendingUpdates.current.delete(path);
-        }
-      }
-      
-      // 不再盲目清理所有 updates
-      // Don't blindly clear all updates anymore
-      // pendingStructureUpdates.current.clear();
-      // pendingUpdates.current.clear();
-
-      setData(prev => {
-        if (!prev) return updatedResult;
-        
-        // 如果是根目录刷新，直接替换整个树
-        // If refreshing root, replace the whole tree
-        if (normalizePathForMatch(targetPath) === normalizePathForMatch(prev.path)) {
-            return sortTreeRecursive(updatedResult);
-        }
-
-        // 如果是子目录刷新，替换对应子树
-        // If refreshing subdirectory, replace corresponding subtree
-        return sortTreeRecursive(updateNodeAtPath(prev, targetPath, {
-            ...updatedResult,
-            // 确保保留原有的父级关联（虽然 updateNodeAtPath 会处理，但为了保险）
-            // Ensure parent association is kept (handled by updateNodeAtPath but to be safe)
-        }));
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
+    
+    // Optimization: Treat refresh as a fresh analysis to avoid expensive merge operations
+    // caused by large update events on existing tree.
+    // 优化：将刷新视为新的分析，以避免现有树上的大量更新事件导致的昂贵合并操作。
+    analyzePath(targetPath);
   };
 
   /**
@@ -839,7 +957,8 @@ function App() {
             if (zUpdates.size > 0) {
                  // const affected = getAffectedPaths([zUpdates]);
                  const appliedPaths = new Set<string>();
-                 updatedNode = applyBatchUpdates(updatedNode, sUpdates, zUpdates, new Set(), true, appliedPaths);
+                 const updatesByParent = buildUpdatesByParent(sUpdates);
+                 updatedNode = applyBatchUpdates(updatedNode, sUpdates, zUpdates, new Set(), true, appliedPaths, updatesByParent);
                  
                  // Clear applied from pendingUpdates
                  for (const path of appliedPaths) {
@@ -877,7 +996,7 @@ function App() {
    * 打开右键菜单。
    * Open context menu.
    */
-  const handleContextMenu = (e: React.MouseEvent, path: string) => {
+  const handleContextMenu = (e: React.MouseEvent | MouseEvent, path: string) => {
     e.preventDefault();
     setContextMenu({
       visible: true,
@@ -907,42 +1026,40 @@ function App() {
    * 统计图数据：生成 ECharts 需要的树形结构
    * Chart dataset: generate tree structure for ECharts
    */
-  const eChartsData = useMemo(() => {
+  const sunburstData = useMemo(() => {
     if (!data) return null;
     const targetNode = currentViewPath ? findNodeByPath(data, currentViewPath) : data;
     if (!targetNode) return null;
 
-    // 根据当前视图生成 ECharts 数据，聚合阈值设为 0.5% 以显示更多细节
-    // Generate ECharts data, threshold 0.5% to show more details
-    // 增加递归深度到 7，确保环形图和矩形树图都能获得足够深的数据
-    // Increase recursion depth to 7
-    return processForECharts(targetNode, 7, 0.001);
+    // 环形图专用处理逻辑，保留角度聚合
+    return processForSunburst(targetNode, 7);
   }, [data, currentViewPath]);
 
+  const treemapData = useMemo(() => {
+    if (!data) return null;
+    const targetNode = currentViewPath ? findNodeByPath(data, currentViewPath) : data;
+    if (!targetNode) return null;
+
+    // 矩形树图专用处理逻辑，不做角度聚合，尽可能保留细节
+    return processForTreemap(targetNode, 7);
+  }, [data, currentViewPath]);
+
+  // Backward compatibility wrapper for other components that might rely on 'eChartsData'
+  // But we should switch the view components to use the specific data
+  const eChartsData = view === 'treemap' ? treemapData : sunburstData;
+
   const categoryData = useMemo(() => {
+    // 性能优化：仅在图表视图下计算分类统计
+    // Performance optimization: only calculate category stats in chart view
+    if (view !== 'chart') return [];
+
     if (!data) return [];
 
-    const systemExts = new Set(['sys', 'dll', 'drv', 'ocx']);
-    const softwareExts = new Set(['exe', 'msi', 'app', 'appx', 'apk', 'deb', 'rpm', 'bat', 'cmd', 'ps1', 'sh']);
-    const gameExts = new Set(['pak', 'unity3d', 'umap', 'ubulk', 'uexp', 'wad', 'obb']);
-    const videoExts = new Set(['mp4', 'mkv', 'avi', 'mov', 'flv', 'wmv', 'webm', 'm4v']);
-    const audioExts = new Set(['mp3', 'flac', 'aac', 'wav', 'ogg', 'm4a', 'wma']);
-    const imageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'ico']);
-    const documentExts = new Set(['pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt', 'md', 'rtf', 'csv']);
+    // Use current view node for statistics, or fallback to root data
+    const targetNode = currentViewPath ? findNodeByPath(data, currentViewPath) : data;
+    if (!targetNode) return [];
 
-    const totals = new Map<string, number>();
-
-    const detectCategory = (name: string) => {
-      const ext = name.toLowerCase().split('.').pop() || '';
-      if (systemExts.has(ext)) return 'system';
-      if (softwareExts.has(ext)) return 'software';
-      if (gameExts.has(ext)) return 'game';
-      if (videoExts.has(ext)) return 'video';
-      if (audioExts.has(ext)) return 'audio';
-      if (imageExts.has(ext)) return 'image';
-      if (documentExts.has(ext)) return 'document';
-      return 'other';
-    };
+    const extensionMap = new Map<string, number>();
 
     const accumulate = (node: FileNode) => {
       if (node.is_dir) {
@@ -953,39 +1070,50 @@ function App() {
       }
       const size = getNodeMetricSize(node);
       if (size === null) return;
-      const key = detectCategory(node.name);
-      totals.set(key, (totals.get(key) || 0) + size);
+      
+      // Extract extension
+      const parts = node.name.split('.');
+      let ext = parts.length > 1 ? parts.pop()?.toLowerCase() || '' : '';
+      if (!ext) ext = 'no_ext'; // No extension
+      
+      extensionMap.set(ext, (extensionMap.get(ext) || 0) + size);
     };
 
-    accumulate(data);
+    accumulate(targetNode);
 
-    const labelMap: Record<string, string> = {
-      system: t('categorySystem'),
-      software: t('categorySoftware'),
-      game: t('categoryGame'),
-      video: t('categoryVideo'),
-      audio: t('categoryAudio'),
-      image: t('categoryImage'),
-      document: t('categoryDocument'),
-      other: t('categoryOther'),
-    };
-
-    const items = Object.entries(labelMap)
-      .map(([key, label]) => {
-        const value = totals.get(key) || 0;
-        return {
-          name: label,
-          value,
-          formattedSize: formatSize(value),
-          path: '',
-          isDir: false,
-        };
-      })
-      .filter(item => item.value > 0)
+    // Convert map to array and sort by size
+    const sortedExtensions = Array.from(extensionMap.entries())
+      .map(([ext, size]) => ({
+        name: ext === 'no_ext' ? '(No Ext)' : `.${ext.toUpperCase()}`,
+        value: size,
+        formattedSize: formatSize(size),
+        path: '',
+        isDir: false,
+      }))
       .sort((a, b) => b.value - a.value);
 
-    return items;
-  }, [data, sizeMetric, t]);
+    // Take top 10 and group the rest into "Other"
+    const topN = 12;
+    if (sortedExtensions.length <= topN) {
+      return sortedExtensions;
+    }
+
+    const topItems = sortedExtensions.slice(0, topN);
+    const otherItems = sortedExtensions.slice(topN);
+    const otherSize = otherItems.reduce((sum, item) => sum + item.value, 0);
+
+    if (otherSize > 0) {
+      topItems.push({
+        name: t('categoryOther'),
+        value: otherSize,
+        formattedSize: formatSize(otherSize),
+        path: '',
+        isDir: false,
+      });
+    }
+
+    return topItems;
+  }, [data, currentViewPath, sizeMetric, t, view]);
 
   const [debouncedEChartsData, setDebouncedEChartsData] = useState(eChartsData);
   useEffect(() => {
@@ -1030,7 +1158,8 @@ function App() {
           if (zUpdates.size > 0) {
                    // const affected = getAffectedPaths([zUpdates]);
                    const appliedPaths = new Set<string>();
-                   updatedNode = applyBatchUpdates(updatedNode, sUpdates, zUpdates, new Set(), true, appliedPaths);
+                   const updatesByParent = buildUpdatesByParent(sUpdates);
+                   updatedNode = applyBatchUpdates(updatedNode, sUpdates, zUpdates, new Set(), true, appliedPaths, updatesByParent);
                    
                    // Clear applied from pendingUpdates
                    for (const path of appliedPaths) {
@@ -1085,6 +1214,15 @@ function App() {
     }
   };
 
+  /**
+   * 返回根目录
+   * Go back to root directory
+   */
+  const handleGoRoot = () => {
+    if (!data) return;
+    setCurrentViewPath(data.path);
+  };
+
   return (
     <div
       className={cn(
@@ -1109,8 +1247,11 @@ function App() {
               <HardDrive size={24} />
             </div>
             <div>
-              <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400">
-                Folder Insight
+              <h1 className="flex items-end gap-2">
+                <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400">
+                  {t('appTitle')}
+                </span>
+                <span className="text-xs font-mono text-gray-400 dark:text-gray-500 mb-1">v{version}</span>
               </h1>
               <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">
                 {t('subtitle')}
@@ -1164,6 +1305,17 @@ function App() {
                 >
                   <BarChart3 size={16} />
                   <span className="hidden lg:inline">{t('chartView')}</span>
+                </button>
+                <button 
+                  onClick={() => setView('fileType')}
+                  title={t('fileTypeView')}
+                  className={cn(
+                    "px-3 py-1.5 rounded-md flex items-center gap-2 text-sm transition-all",
+                    view === 'fileType' ? "bg-white dark:bg-gray-700 shadow-sm" : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                  )}
+                >
+                  <PieChart size={16} />
+                  <span className="hidden lg:inline">{t('fileTypeView')}</span>
                 </button>
               </div>
             )}
@@ -1268,92 +1420,187 @@ function App() {
           <div className="flex flex-col items-center justify-center h-full">
             <Loader2 className="animate-spin text-blue-600 mb-4" size={48} />
             <p className="text-gray-500">{t('analyzing')}</p>
+            {scanProgress && (
+              <div className="mt-4 text-center space-y-2 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {t('scannedCount', { count: scanProgress.scanned_count.toLocaleString() })}
+                </p>
+                <p className="text-xs text-gray-400 max-w-md truncate px-4 mx-auto" title={scanProgress.current_path}>
+                  {scanProgress.current_path}
+                </p>
+              </div>
+            )}
           </div>
         )}
 
         {data && !loading && (
           <div className="flex flex-col h-full space-y-4">
-            <div className={cn("grid gap-4 shrink-0", isMacOS() ? "grid-cols-3" : "grid-cols-1 md:grid-cols-[1.2fr_1fr_0.8fr]")}>
-              <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm flex flex-col justify-between">
-                <div className="text-gray-500 text-xs mb-1 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <HardDrive size={14} /> <span className="whitespace-nowrap">{t('totalSize')}</span>
+            {view === 'tree' ? (
+              <div className={cn("grid gap-4 shrink-0", isMacOS() ? "grid-cols-3" : "grid-cols-1 md:grid-cols-[1.2fr_1fr_0.8fr]")}>
+                <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm flex flex-col justify-between">
+                  <div className="text-gray-500 text-xs mb-1 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <HardDrive size={14} /> <span className="whitespace-nowrap">{t('totalSize')}</span>
+                    </div>
+                    <div className="flex items-center bg-gray-100 dark:bg-gray-700 rounded-md p-0.5 text-[10px] shrink-0">
+                      <button
+                        onClick={() => setSizeMetric('logical')}
+                        className={cn(
+                          "px-1.5 py-0.5 rounded-md transition-colors whitespace-nowrap",
+                          sizeMetric === 'logical'
+                            ? "bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 shadow-sm"
+                            : "text-gray-500 dark:text-gray-300"
+                        )}
+                      >
+                        {t('metricLogical')}
+                      </button>
+                      <button
+                        onClick={() => setSizeMetric('allocated')}
+                        className={cn(
+                          "px-1.5 py-0.5 rounded-md transition-colors whitespace-nowrap",
+                          sizeMetric === 'allocated'
+                            ? "bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 shadow-sm"
+                            : "text-gray-500 dark:text-gray-300"
+                        )}
+                      >
+                        {t('metricAllocated')}
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex items-center bg-gray-100 dark:bg-gray-700 rounded-md p-0.5 text-[10px] shrink-0">
-                    <button
-                      onClick={() => setSizeMetric('logical')}
-                      className={cn(
-                        "px-1.5 py-0.5 rounded-md transition-colors whitespace-nowrap",
-                        sizeMetric === 'logical'
-                          ? "bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 shadow-sm"
-                          : "text-gray-500 dark:text-gray-300"
-                      )}
-                    >
-                      {t('metricLogical')}
-                    </button>
-                    <button
-                      onClick={() => setSizeMetric('allocated')}
-                      className={cn(
-                        "px-1.5 py-0.5 rounded-md transition-colors whitespace-nowrap",
-                        sizeMetric === 'allocated'
-                          ? "bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 shadow-sm"
-                          : "text-gray-500 dark:text-gray-300"
-                      )}
-                    >
-                      {t('metricAllocated')}
-                    </button>
-                  </div>
-                </div>
-                <div className="text-xl font-bold">
-                  {(() => {
-                    const { partialSize, hasPending } = getRealtimeSummary(data);
-                    const isCalculating = hasPending || isReceivingUpdates;
-                    const metricValue = sizeMetric === 'allocated' ? data.allocated_size : data.size;
-                    if (metricValue === null) {
+                  <div className="text-xl font-bold">
+                    {(() => {
+                      const { partialSize, hasPending } = getRealtimeSummary(data);
+                      const isCalculating = hasPending || isReceivingUpdates;
+                      const metricValue = sizeMetric === 'allocated' ? data.allocated_size : data.size;
+                      if (metricValue === null) {
+                        return (
+                          <>
+                            {formatSize(partialSize)}
+                            {isCalculating && <span className="text-sm font-normal text-gray-500 ml-2">{t('calculatingInline')}</span>}
+                          </>
+                        );
+                      }
                       return (
                         <>
-                          {formatSize(partialSize)}
+                          {formatSize(metricValue)}
                           {isCalculating && <span className="text-sm font-normal text-gray-500 ml-2">{t('calculatingInline')}</span>}
                         </>
                       );
-                    }
-                    return (
-                      <>
-                        {formatSize(metricValue)}
-                        {isCalculating && <span className="text-sm font-normal text-gray-500 ml-2">{t('calculatingInline')}</span>}
-                      </>
-                    );
-                  })()}
+                    })()}
+                  </div>
+                </div>
+                <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm flex flex-col justify-between">
+                  <div className="text-gray-500 text-xs mb-1 flex items-center gap-1.5">
+                    <Files size={14} /> {t('totalFiles')}
+                  </div>
+                  <div className="text-xl font-bold">
+                    {(() => {
+                      const { partialFileCount, hasPending } = getRealtimeSummary(data);
+                      const isCalculating = hasPending || isReceivingUpdates;
+                      const metricValue = sizeMetric === 'allocated' ? data.allocated_size : data.size;
+                      const fileCountValue = metricValue === null ? partialFileCount : data.file_count;
+                      return (
+                        <>
+                          {fileCountValue.toLocaleString(numberLocale)}
+                          {isCalculating && <span className="text-sm font-normal text-gray-500 ml-2">{t('calculatingInline')}</span>}
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+                <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm flex flex-col justify-between">
+                  <div className="text-gray-500 text-xs mb-1 flex items-center gap-1.5">
+                    <Folder size={14} /> {t('rootDirectory')}
+                  </div>
+                  <div className="text-base font-semibold truncate" title={data.path as string}>
+                    {data.name}
+                  </div>
                 </div>
               </div>
-              <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm flex flex-col justify-between">
-                <div className="text-gray-500 text-xs mb-1 flex items-center gap-1.5">
-                  <Files size={14} /> {t('totalFiles')}
+            ) : (
+              <div className="flex items-center w-full bg-white dark:bg-gray-800 p-3 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm shrink-0">
+                {/* Total Size */}
+                <div className="flex-1 flex items-center justify-center gap-2 min-w-0 px-2">
+                  <div className="text-gray-500 flex items-center gap-1.5 shrink-0" title={t('totalSize')}>
+                    <HardDrive size={16} /> 
+                    <span className="text-xs hidden xl:inline">{t('totalSize')}</span>
+                  </div>
+                  <div className="text-sm font-bold flex items-center gap-2 truncate">
+                    {(() => {
+                      const { partialSize, hasPending } = getRealtimeSummary(data);
+                      const isCalculating = hasPending || isReceivingUpdates;
+                      const metricValue = sizeMetric === 'allocated' ? data.allocated_size : data.size;
+                      const displayValue = metricValue === null ? formatSize(partialSize) : formatSize(metricValue);
+                      return (
+                        <>
+                          {displayValue}
+                          {isCalculating && <span className="text-xs font-normal text-gray-500 ml-1">{t('calculatingInline')}</span>}
+                        </>
+                      );
+                    })()}
+                    <div className="flex bg-gray-100 dark:bg-gray-700 rounded p-0.5 text-[9px] shrink-0">
+                      <button
+                        onClick={() => setSizeMetric('logical')}
+                        className={cn(
+                          "px-1.5 py-0.5 rounded transition-colors",
+                          sizeMetric === 'logical' ? "bg-white dark:bg-gray-600 shadow-sm text-gray-800 dark:text-gray-100" : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                        )}
+                        title={t('metricLogical')}
+                      >
+                        L
+                      </button>
+                      <button
+                        onClick={() => setSizeMetric('allocated')}
+                        className={cn(
+                          "px-1.5 py-0.5 rounded transition-colors",
+                          sizeMetric === 'allocated' ? "bg-white dark:bg-gray-600 shadow-sm text-gray-800 dark:text-gray-100" : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                        )}
+                        title={t('metricAllocated')}
+                      >
+                        A
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div className="text-xl font-bold">
-                  {(() => {
-                    const { partialFileCount, hasPending } = getRealtimeSummary(data);
-                    const isCalculating = hasPending || isReceivingUpdates;
-                    const metricValue = sizeMetric === 'allocated' ? data.allocated_size : data.size;
-                    const fileCountValue = metricValue === null ? partialFileCount : data.file_count;
-                    return (
-                      <>
-                        {fileCountValue.toLocaleString(numberLocale)}
-                        {isCalculating && <span className="text-sm font-normal text-gray-500 ml-2">{t('calculatingInline')}</span>}
-                      </>
-                    );
-                  })()}
+
+                <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
+
+                {/* File Count */}
+                <div className="flex-1 flex items-center justify-center gap-2 min-w-0 px-2">
+                  <div className="text-gray-500 flex items-center gap-1.5 shrink-0" title={t('totalFiles')}>
+                    <Files size={16} /> 
+                    <span className="text-xs hidden xl:inline">{t('totalFiles')}</span>
+                  </div>
+                  <div className="text-sm font-bold truncate">
+                    {(() => {
+                      const { partialFileCount, hasPending } = getRealtimeSummary(data);
+                      const isCalculating = hasPending || isReceivingUpdates;
+                      const metricValue = sizeMetric === 'allocated' ? data.allocated_size : data.size;
+                      const fileCountValue = metricValue === null ? partialFileCount : data.file_count;
+                      return (
+                        <>
+                          {fileCountValue.toLocaleString(numberLocale)}
+                          {isCalculating && <span className="text-xs font-normal text-gray-500 ml-1">{t('calculatingInline')}</span>}
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
+
+                {/* Root Directory */}
+                <div className="flex-1 flex items-center justify-center gap-2 min-w-0 px-2">
+                  <div className="text-gray-500 flex items-center gap-1.5 shrink-0" title={t('rootDirectory')}>
+                    <Folder size={16} /> 
+                    <span className="text-xs hidden xl:inline">{t('rootDirectory')}</span>
+                  </div>
+                  <div className="text-sm font-semibold truncate max-w-[200px]" title={data.path as string}>
+                    {data.name}
+                  </div>
                 </div>
               </div>
-              <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm flex flex-col justify-between">
-                <div className="text-gray-500 text-xs mb-1 flex items-center gap-1.5">
-                  <Folder size={14} /> {t('rootDirectory')}
-                </div>
-                <div className="text-base font-semibold truncate" title={data.path as string}>
-                  {data.name}
-                </div>
-              </div>
-            </div>
+            )}
 
             <div ref={fileListRef} className="flex-1 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden flex flex-col relative">
               <AnimatePresence mode="wait">
@@ -1368,6 +1615,7 @@ function App() {
                   >
                     <TreeView 
                       data={data}
+                      diskStats={diskStats}
                       expandedPaths={expandedPaths}
                       loadingPaths={loadingPaths}
                       onToggleExpand={toggleExpand}
@@ -1390,7 +1638,27 @@ function App() {
                         t={t}
                         onDrillDown={handleChartDrillDown}
                         onGoUp={handleGoUp}
+                        onGoRoot={handleGoRoot}
+                        onContextMenu={handleContextMenu}
                         canGoUp={!!currentViewPath && normalizePathForMatch(currentViewPath) !== normalizePathForMatch(data.path)}
+                        currentPath={currentViewPath || data.path}
+                      />
+                    </Suspense>
+                  </motion.div>
+                ) : view === 'fileType' ? (
+                  <motion.div
+                    key="fileType"
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 1.05 }}
+                    transition={{ duration: 0.2 }}
+                    className="flex-1 overflow-hidden"
+                  >
+                    <Suspense fallback={<div className="h-full w-full flex items-center justify-center"><Loader2 className="animate-spin text-gray-400" /></div>}>
+                      <FileTypeView 
+                        data={data}
+                        t={t}
+                        onContextMenu={handleContextMenu}
                       />
                     </Suspense>
                   </motion.div>
@@ -1410,7 +1678,10 @@ function App() {
                         t={t}
                         onDrillDown={handleChartDrillDown}
                         onGoUp={handleGoUp}
+                        onGoRoot={handleGoRoot}
+                        onContextMenu={handleContextMenu}
                         canGoUp={!!currentViewPath && normalizePathForMatch(currentViewPath) !== normalizePathForMatch(data.path)}
+                        currentPath={currentViewPath || data.path}
                       />
                     </Suspense>
                   </motion.div>
@@ -1425,6 +1696,13 @@ function App() {
       <SponsorModal 
         isOpen={isSponsorModalOpen} 
         onClose={() => setIsSponsorModalOpen(false)} 
+        t={t}
+      />
+
+      {/* 评分弹窗 / Rate Modal */}
+      <RateModal 
+        isOpen={isRateModalOpen} 
+        onClose={() => setIsRateModalOpen(false)} 
         t={t}
       />
     </div>

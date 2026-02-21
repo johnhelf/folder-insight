@@ -10,12 +10,13 @@ import {
   ShieldAlert
 } from "lucide-react";
 import { formatSize } from "../utils";
-import { FileNode } from "../types";
+import { FileNode, DiskStats } from "../types";
 
 
 
 interface TreeViewProps {
   data: FileNode;
+  diskStats: DiskStats | null;
   expandedPaths: Set<string>;
   loadingPaths: Set<string>;
   onToggleExpand: (path: string) => void;
@@ -124,6 +125,7 @@ const Row = ({ index, style, flatData, expandedPaths, loadingPaths, onToggleExpa
 
 export const TreeView: React.FC<TreeViewProps> = ({ 
   data, 
+  diskStats,
   expandedPaths, 
   loadingPaths, 
   onToggleExpand, 
@@ -149,11 +151,29 @@ export const TreeView: React.FC<TreeViewProps> = ({
       <div className="shrink-0 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50">
         <div className="p-3 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center">
             <h2 className="font-semibold text-sm flex items-center gap-2 text-gray-800 dark:text-gray-100">
-            <Folder className="text-blue-500" size={16} />
-            {t('treeView')}
+              <Folder className="text-blue-500" size={16} />
+              {t('treeView')}
             </h2>
-            <div className="text-xs text-gray-500">
-            {t('totalSize')}: <span className="font-mono text-gray-700 dark:text-gray-300 font-medium">{formatSize(data.size || 0)}</span>
+            
+            <div className="flex items-center gap-4 text-xs">
+              {diskStats && (
+                <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400 bg-gray-200/50 dark:bg-gray-800/50 px-2 py-1 rounded">
+                  <span className="font-medium">{diskStats.name || 'Disk'} ({diskStats.mount_point}):</span>
+                  <div className="w-20 h-2 bg-gray-300 dark:bg-gray-700 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-blue-500" 
+                      style={{ width: `${(diskStats.used / diskStats.total) * 100}%` }}
+                    />
+                  </div>
+                  <span>
+                    {formatSize(diskStats.used)} / {formatSize(diskStats.total)}
+                  </span>
+                </div>
+              )}
+              
+              <div className="text-gray-500">
+                {t('totalSize')}: <span className="font-mono text-gray-700 dark:text-gray-300 font-medium">{formatSize(data.size || 0)}</span>
+              </div>
             </div>
         </div>
         

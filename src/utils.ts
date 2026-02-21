@@ -31,3 +31,10 @@ export const isMacOS = () => {
   
   return /Mac/i.test(platform) || /Mac/i.test(userAgent);
 };
+
+export const isWindows = () => {
+  if (typeof window === 'undefined') return false;
+  const platform = (window.navigator as any).userAgentData?.platform || window.navigator.platform;
+  const userAgent = window.navigator.userAgent;
+  return /Win/i.test(platform) || /Win/i.test(userAgent);
+};

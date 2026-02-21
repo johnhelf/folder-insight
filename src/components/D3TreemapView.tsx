@@ -6,11 +6,13 @@ import { formatSize } from '../utils';
 interface D3TreemapViewProps {
   data: EChartsNode | null;
   onDrillDown?: (path: string) => void;
+  onContextMenu?: (e: React.MouseEvent | MouseEvent, path: string) => void;
 }
 
 export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
   data,
-  onDrillDown
+  onDrillDown,
+  onContextMenu
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -104,10 +106,11 @@ export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
 
     const treemap = d3.treemap<EChartsNode>()
       .size([width, height])
-      .paddingTop(20)
+      .paddingTop(22)
       .paddingRight(2)
       .paddingBottom(2)
       .paddingLeft(2)
+      .paddingInner(1)
       .round(true);
 
     const root = treemap(hierarchy);
@@ -198,6 +201,13 @@ export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
         setHoverNode(null);
         if (!d.children) {
              d3.select(event.currentTarget).attr("fill-opacity", 0.9);
+        }
+      })
+      .on("contextmenu", (event, d) => {
+        event.stopPropagation();
+        if (onContextMenu) {
+          // Pass the event and the path of the clicked node
+          onContextMenu(event, d.data.path);
         }
       });
 

@@ -30,3 +30,11 @@ export interface BatchStructureUpdate {
 export interface BatchSizeUpdate {
   updates: SizeUpdate[];
 }
+
+export interface DiskStats {
+  total: number;
+  used: number;
+  available: number;
+  mount_point: string;
+  name: string;
+}

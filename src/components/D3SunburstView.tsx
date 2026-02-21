@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useMemo } from 'react';
 import * as d3 from 'd3';
 import { EChartsNode } from '../chartHelpers';
 import { formatSize } from '../utils';
@@ -9,13 +9,15 @@ interface D3SunburstViewProps {
   onDrillDown?: (path: string) => void;
   onGoUp?: () => void;
   canGoUp?: boolean;
+  onContextMenu?: (e: React.MouseEvent | MouseEvent, path: string) => void;
 }
 
 export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
   data,
   onDrillDown,
   onGoUp,
-  canGoUp
+  canGoUp,
+  onContextMenu
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -34,7 +36,6 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
       const isLeft = x < rect.width / 2;
 
       // Position in opposite corner
-      // If mouse is Top-Left, tooltip goes Bottom-Right
       tooltip.style.top = isTop ? 'auto' : '1rem';
       tooltip.style.bottom = isTop ? '1rem' : 'auto';
       tooltip.style.left = isLeft ? 'auto' : '1rem';
@@ -43,6 +44,20 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
   };
 
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  
+  // Aggregate data using d3.hierarchy directly
+  const processedHierarchy = useMemo(() => {
+    if (!data) return null;
+    
+    // 1. Create hierarchy and sum values
+    // NOTE: We do NOT prune small nodes here anymore because processForECharts already handles aggregation.
+    // If we prune here, we might remove the "Others" node if it is small, which is not desired.
+    const root = d3.hierarchy(data)
+        .sum(d => (d.children && d.children.length > 0) ? 0 : d.value)
+        .sort((a, b) => (b.value || 0) - (a.value || 0));
+    
+    return root;
+  }, [data]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -55,20 +70,16 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
   }, []);
 
   useEffect(() => {
-    if (!data || !svgRef.current || !containerRef.current) return;
+    if (!processedHierarchy || !svgRef.current || !containerRef.current) return;
 
-    // Use dimensions from state if available, otherwise fallback to current size
     const width = dimensions.width || containerRef.current.clientWidth;
     const height = dimensions.height || containerRef.current.clientHeight;
     
     if (width === 0 || height === 0) return;
 
-    // Maximize chart size (aggressive fit)
-    // We want to leave about 5% padding on top/bottom
-    // So 0.5 * 0.9 = 0.45 (which is 90% of the half-height, i.e., 5% margin on each side)
-    const radius = Math.min(width, height) * 0.45;
+    // Radius: 30% of min dimension (reduced from 35% to ensure labels fit)
+    const radius = Math.min(width, height) * 0.30;
 
-    // Clear previous
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove();
 
@@ -77,43 +88,26 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
       .style("font", "12px 'SimHei', 'Microsoft YaHei', sans-serif")
       .append("g");
 
-    const hierarchy = d3.hierarchy(data)
-      .sum(d => (d.children && d.children.length > 0) ? 0 : d.value)
-      .sort((a, b) => (b.value || 0) - (a.value || 0));
-
-    // Create partition layout
     const partition = d3.partition<EChartsNode>()
       .size([2 * Math.PI, radius]);
 
-    const root = partition(hierarchy);
+    const root = partition(processedHierarchy);
 
-    // Color scale - Use consistent coloring logic with Treemap
-    // Map top-level (Depth 1) categories to distinct colors
+    // Color scale
     const topLevelCategories = (root.children || []).map(d => d.data.name);
-    // Use a large categorical palette
-    const colorScale = d3.scaleOrdinal(d3.schemeTableau10)
-        .domain(topLevelCategories);
+    const colorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(topLevelCategories);
 
     const getNodeColor = (d: d3.HierarchyRectangularNode<EChartsNode>) => {
         if (d.depth === 0) return "transparent";
-        // Find depth 1 ancestor to keep color consistent within a sector
+        if (d.data.name.startsWith("其他") || d.data.name.startsWith("Other")) return "#e0e0e0";
         const ancestor = d.ancestors().find(n => n.depth === 1);
         const key = ancestor ? ancestor.data.name : d.data.name;
         return colorScale(key);
     };
 
-    // Arc generator
-    // Adjust ring widths to fit available layers dynamically
-    // 动态调整圆环宽度以适应层级数量
-    
-    // Limit max layers to consider for width calculation (don't make them too thin if depth > 7)
-    // 限制最大层数计算 (如果深度 > 7，不让层级变得过薄)
-    // Fix: Use fixed layer count (7) to ensure consistent ring width and avoid visual jumping during navigation
-    // 修复：使用固定层数（7），确保圆环宽度一致，避免导航时的视觉跳动
+    // Fixed layer width
     const effectiveLayers = 7;
-    
-    // Available radius from 15% to 100% = 85%
-    const layerWidth = 0.85 / effectiveLayers;
+    const layerWidth = 0.9 / effectiveLayers; 
 
     const arc = d3.arc<d3.HierarchyRectangularNode<EChartsNode>>()
       .startAngle(d => d.x0)
@@ -121,31 +115,26 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
       .padAngle(d => Math.min((d.x1 - d.x0) / 2, 0.005))
       .padRadius(radius / 2)
       .innerRadius(d => {
-        if (d.depth === 0) return 0; // Center
-        if (d.depth === 1) return radius * 0.15; // Gap
-        // Dynamic width
-        return radius * (0.15 + (d.depth - 1) * layerWidth);
+        if (d.depth === 0) return 0;
+        if (d.depth === 1) return radius * 0.10;
+        return radius * (0.10 + (d.depth - 1) * layerWidth);
       })
       .outerRadius(d => {
-        if (d.depth === 0) return radius * 0.10; // Center
-        // Dynamic width
-        return radius * (0.15 + (d.depth) * layerWidth) - 1;
+        if (d.depth === 0) return radius * 0.05;
+        return radius * (0.10 + (d.depth) * layerWidth) - 1;
       });
 
-    // Draw arcs
+    // Draw Arcs
+    // Filter extremely small arcs only for display performance, but keep "Others" which might be small but aggregated
+    // 0.02 rad is approx 1 degree. We can filter truly invisible things.
+    const displayThreshold = 0.005; 
+    
     g.append("g")
       .selectAll("path")
-      // Show up to 7 levels as requested
-      // Optimization: Filter out very small arcs (less than 0.005 radians) to improve performance
-      // 优化：过滤掉非常小的扇区（小于 0.005 弧度），以减少 DOM 节点数量，解决 Linux 下的卡顿问题
-      .data(root.descendants().filter(d => d.depth <= 7 && (d.x1 - d.x0) > 0.005))
+      .data(root.descendants().filter(d => d.depth <= 7 && (d.x1 - d.x0) > displayThreshold))
       .join("path")
       .attr("fill", d => getNodeColor(d))
-      .attr("fill-opacity", d => {
-        if (d.depth === 0) return 1;
-        // Fade out slightly for deeper levels to show depth
-        return 1 - (d.depth * 0.08); // 0.92, 0.84, etc.
-      })
+      .attr("fill-opacity", d => d.depth === 0 ? 1 : 1 - (d.depth * 0.08))
       .attr("d", arc)
       .style("cursor", "pointer")
       .on("click", (_event, d) => {
@@ -164,180 +153,217 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
       .on("mouseover", (event, d) => {
         setHoverNode(d);
         d3.select(event.currentTarget).attr("fill-opacity", 1);
+      })
+      .on("contextmenu", (event, d) => {
+        event.stopPropagation();
+        if (onContextMenu) {
+          let path = d.data.path;
+          // If aggregated node (path is empty or specific name), use parent path
+          if (!path || d.data.name.startsWith("其他") || d.data.name.startsWith("Others")) {
+             if (d.parent && d.parent.data.path) {
+                 path = d.parent.data.path;
+             }
+          }
+          
+          if (path) {
+            onContextMenu(event, path);
+          }
+        }
       });
 
-    // --- External Labels with Lines (Spider Labels) ---
-    // Only label visible nodes with sufficient angular width, primarily leaves or outer-most
-    const labelThreshold = 0.02; // Reduced threshold (approx 1.1 degrees) to show more labels
-    
-    // Helper to check if a node has any children that are large enough to be labeled
-    const hasLabelableChildren = (d: d3.HierarchyRectangularNode<EChartsNode>) => {
-        if (!d.children || d.children.length === 0) return false;
-        return d.children.some(c => (c.x1 - c.x0) > labelThreshold);
-    };
-
-    const labelData = root.descendants().filter(d => {
-        // Skip root and center
-        if (d.depth === 0) return false;
-        // Only visible layers
-        if (d.depth > 7) return false;
-        // Only large enough arcs
-        if ((d.x1 - d.x0) < labelThreshold) return false;
-        
-        // Priority logic:
-        // 1. Inner rings are prioritized (allow more labels or looser constraints?)
-        // 2. For each parent, only show the top N largest children.
-        
-        const parent = d.parent;
-        if (parent && parent.children) {
-            // Find rank among siblings based on value (size)
-            // Note: children are already sorted by value in d3.hierarchy setup if we used .sort()
-            // but let's be safe and find index in the current sorted children array
-            const siblings = parent.children; // Assuming this array is sorted by value descending
-            const rank = siblings.indexOf(d);
-            
-            // Define max labels per parent based on depth
-            // Inner rings (depth 1, 2) get more slots. Outer rings get fewer.
-            let maxLabelsPerParent = 3;
-            if (d.depth === 1) maxLabelsPerParent = 10;
-            else if (d.depth === 2) maxLabelsPerParent = 5;
-            
-            if (rank >= maxLabelsPerParent) return false;
-        }
-
-        // Show label if:
-        // 1. It is a leaf node (no children)
-        // 2. OR it is effectively a leaf for labeling purposes (no children big enough to be labeled)
-        // 3. OR it is at the max depth of the view
-        // This ensures that large groups of small files get a label at the parent folder level
-        return !hasLabelableChildren(d) || d.depth === 7;
-    });
-
+    // --- Enhanced Label Layout (Spider/Folded Line) ---
     const labelGroup = g.append("g")
+        .attr("class", "label-container")
         .attr("pointer-events", "none")
-        .classed("labels", true);
-        
-    const linesGroup = g.append("g")
-        .attr("pointer-events", "none")
-        .classed("lines", true);
+        .style("font-size", "12px")
+        .style("font-family", "sans-serif");
 
-    // Arc for label positioning (just outside the chart)
+    // 1. Identify candidates (> 1 degree to be worth labeling)
+    const labelThreshold = 0.02; // ~1.1 degrees
+    const candidates = root.descendants().filter(d => 
+        d.depth > 0 && 
+        d.depth <= 7 && 
+        (d.x1 - d.x0) > labelThreshold &&
+        !d.data.name.startsWith("其他") && 
+        !d.data.name.startsWith("Others")
+    );
+
+    // 2. Prepare label data
+    const outerArcRadius = radius * 1.05;
     const labelArc = d3.arc<d3.HierarchyRectangularNode<EChartsNode>>()
-        .innerRadius(radius * 1.01)
-        .outerRadius(radius * 1.01)
+        .innerRadius(outerArcRadius)
+        .outerRadius(outerArcRadius + 10) // Give it some thickness for stable centroid
         .startAngle(d => d.x0)
         .endAngle(d => d.x1);
 
-    // Compute positions with collision avoidance
-    const labels = labelData.map(d => {
-        const pos = labelArc.centroid(d);
-        const midAngle = (d.x0 + d.x1) / 2;
-        // True if right side
-        const isRight = Math.cos(midAngle - Math.PI / 2) > 0;
+    interface LabelItem {
+        node: d3.HierarchyRectangularNode<EChartsNode>;
+        p0: [number, number]; // Arc centroid
+        p1: [number, number]; // Elbow start (near outer ring)
+        isRight: boolean;
+        targetY: number;      // Ideal Y
+        x: number;            // Final X
+        y: number;            // Final Y
+        color: string;        // Node color
+    }
+
+    const labels: LabelItem[] = candidates.map(d => {
+        const p0 = arc.centroid(d);
+        const p1 = labelArc.centroid(d);
         
-        // Base x/y
-        // We push labels to the far left/right
-        const x = radius * 1.03 * (isRight ? 1 : -1);
-        const y = pos[1];
-        
-        // Priority for label placement relaxation:
-        // Lower depth (closer to root) = Higher priority (should move less, or displace others)
-        // Larger arc = Higher priority
-        const priority = (10 - d.depth) * 100 + (d.x1 - d.x0) * 1000;
+        // Use x coordinate to determine side
+        const isRight = p0[0] >= 0;
 
         return {
             node: d,
-            x,
-            y,
+            p0,
+            p1,
             isRight,
-            posA: arc.centroid(d), // Inner anchor
-            posB: pos, // Outer anchor (pre-adjustment)
-            priority
+            targetY: p1[1],
+            x: isRight ? radius * 1.45 : -radius * 1.45,
+            y: p1[1],
+            color: getNodeColor(d)
         };
     });
 
-    // Simple 1D collision detection on y-axis for left and right groups independently
-    const relaxLabels = (items: typeof labels) => {
-        const spacing = 11; // Slightly looser to avoid clutter
-        // Sort by y to establish initial order
-        items.sort((a, b) => a.y - b.y);
+    // 3. Vertical Collision Resolution
+    const spacing = 14; // Slightly tighter spacing
+    
+    const resolveCollisions = (items: LabelItem[]) => {
+        if (items.length === 0) return;
+
+        // Sort by Y from top to bottom
+        items.sort((a, b) => a.targetY - b.targetY);
         
-        // Constrain within height limits to prevent cutoff
-        const maxY = height / 2 - 10;
-        const minY = -height / 2 + 10;
+        // simple sweep to push down
+        for (let i = 0; i < items.length; i++) {
+            if (i === 0) continue;
+            const prev = items[i-1];
+            const curr = items[i];
+            
+            if (curr.y < prev.y + spacing) {
+                curr.y = prev.y + spacing;
+            }
+        }
+
+        // Check if we pushed too far down (centering logic)
         
-        // Iterative relaxation
-        for(let k=0; k<5; k++) {
-            for (let i = 0; i < items.length - 1; i++) {
-                const a = items[i];
-                const b = items[i+1];
-                if (b.y - a.y < spacing) {
-                    const overlap = spacing - (b.y - a.y);
-                    
-                    // Distribute overlap based on priority? 
-                    // Or just push apart equally for simplicity, as priority was used for selection.
-                    // Let's stick to equal push for stability, but maybe bias if we wanted.
-                    // For now, equal push.
-                    a.y -= overlap / 2;
-                    b.y += overlap / 2;
-                }
-            }
-            // Clamp to view bounds immediately
-            for (let item of items) {
-                 if (item.y > maxY) item.y = maxY;
-                 if (item.y < minY) item.y = minY;
-            }
+        // Let's try to center the group of labels vertically if they are skewed
+        const maxY = items[items.length - 1].y;
+        
+        // We want 'center' to be close to 0 (chart vertical center)
+        // Shift all items by -center
+        // But we must respect the original targetY order roughly.
+        // This simple shift helps if the collision resolution pushed everything down.
+        
+        // However, we only pushed DOWN. So items tend to be lower than their targets.
+        // We can shift them UP if they are too low.
+        
+        // Let's compute the shift needed to center the group around 0
+        // BUT we should only shift if it doesn't move items too far from their targetY?
+        // Actually, collision resolution is dominant.
+        
+        // Only shift if maxY > height/2 (bottom edge)
+        const bottomLimit = height / 2 - 20;
+        const topLimit = -height / 2 + 20;
+        
+        if (maxY > bottomLimit) {
+            const shift = maxY - bottomLimit;
+            items.forEach(item => item.y -= shift);
+        }
+        
+        // Re-check top
+        if (items[0].y < topLimit) {
+            // If we shifted up and hit top, we are squeezed.
+            // Just clamp top?
+             const shiftDown = topLimit - items[0].y;
+             items.forEach(item => item.y += shiftDown);
         }
     };
 
-    const leftLabels = labels.filter(l => !l.isRight);
-    const rightLabels = labels.filter(l => l.isRight);
+    const leftLabels = labels.filter(d => !d.isRight);
+    const rightLabels = labels.filter(d => d.isRight);
     
-    relaxLabels(leftLabels);
-    relaxLabels(rightLabels);
+    resolveCollisions(leftLabels);
+    resolveCollisions(rightLabels);
 
-    // Draw lines
-    linesGroup.selectAll("polyline")
-        .data(labels)
-        .join("polyline")
-        .attr("points", d => {
-            const posA = d.posA;
-            const posB = d.posB; // Original outer anchor
-            const posC = [d.x, d.y]; // Adjusted label position
-            
-            return [posA, posB, posC].map(p => p.join(",")).join(" ");
-        })
-        .attr("fill", "none")
-        .attr("stroke", "currentColor")
-        .attr("stroke-width", "1px")
-        .attr("opacity", 0.35);
+    // 4. Draw Labels & Polylines using data join for interactivity
+    const labelSelection = labelGroup.selectAll<SVGGElement, LabelItem>(".label-group")
+        .data([...leftLabels, ...rightLabels])
+        .join("g")
+        .attr("class", "label-group")
+        .style("opacity", 0.8);
 
-    // Draw text
-    labelGroup.selectAll("text")
-        .data(labels)
-        .join("text")
-        .attr("transform", d => `translate(${d.x},${d.y})`)
+    labelSelection.append("polyline")
+        .attr("points", l => `${l.p0[0]},${l.p0[1]} ${l.p1[0]},${l.p1[1]} ${l.x},${l.y}`)
+        .style("fill", "none")
+        .style("stroke", "#64748b") // Default slate-500
+        .style("stroke-width", "1.5px")
+        .style("transition", "stroke 0.2s, stroke-width 0.2s");
+
+    labelSelection.append("text")
+        .attr("x", l => l.isRight ? l.x + 8 : l.x - 8)
+        .attr("y", l => l.y)
         .attr("dy", "0.35em")
-        .style("text-anchor", d => d.isRight ? "start" : "end")
-        .text(d => {
-            const name = d.node.data.name;
-            return name.length > 20 ? name.slice(0, 18) + "..." : name;
-        })
-        .attr("fill", "currentColor")
-        .style("font-size", "11px");
+        .attr("text-anchor", l => l.isRight ? "start" : "end")
+        // Truncate at 40 chars instead of 15
+        .text(l => l.node.data.name.length > 40 ? l.node.data.name.slice(0, 37) + "..." : l.node.data.name)
+        .style("fill", "currentColor")
+        .style("font-weight", "600")
+        .style("transition", "fill 0.2s");
 
-  }, [data, canGoUp]);
+  }, [processedHierarchy, canGoUp, dimensions]);
+
+  // Effect to handle hover state for labels
+  useEffect(() => {
+    if (!svgRef.current) return;
+    
+    const svg = d3.select(svgRef.current);
+    const labelGroups = svg.selectAll<SVGGElement, any>(".label-group");
+    
+    if (!hoverNode) {
+        // Reset to default
+        labelGroups.style("opacity", 0.8);
+        labelGroups.select("polyline")
+            .style("stroke", "#64748b")
+            .style("stroke-width", "1.5px");
+        labelGroups.select("text")
+            .style("fill", "currentColor");
+    } else {
+        // Highlight matching label, but do NOT dim others to avoid flickering
+        labelGroups.each(function(d) {
+            const isMatch = d.node === hoverNode || d.node.data.path === hoverNode.data.path;
+            const el = d3.select(this);
+            
+            if (isMatch) {
+                el.style("opacity", 1);
+                el.select("polyline")
+                    .style("stroke", d.color)
+                    .style("stroke-width", "2.5px");
+                el.select("text")
+                    .style("fill", d.color);
+            } else {
+                // Keep default style for others
+                el.style("opacity", 0.8);
+                el.select("polyline")
+                    .style("stroke", "#64748b")
+                    .style("stroke-width", "1.5px");
+                el.select("text")
+                    .style("fill", "currentColor");
+            }
+        });
+    }
+  }, [hoverNode]);
 
   return (
     <div 
-      className="flex-1 min-h-0 relative w-full h-full" 
+      className="flex-1 min-h-0 relative w-full h-full text-slate-600 dark:text-slate-300" 
       ref={containerRef}
       onMouseMove={handleMouseMove}
     >
       <svg ref={svgRef} width="100%" height="100%"></svg>
       
-      {/* Smart Tooltip Overlay - Fixed Corner */}
-      {/* 始终显示在鼠标位置的对角，避免遮挡内容和被边缘裁切 */}
+      {/* Tooltip */}
       <div 
           ref={tooltipRef}
           className="absolute pointer-events-none bg-slate-900/60 text-white text-xs p-3 rounded-lg z-50 whitespace-normal shadow-xl border border-slate-700/50 backdrop-blur-xl backdrop-saturate-150"

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
+use sysinfo::Disks;
 
 /// 应用程序状态（全局共享）
 struct AppState {
@@ -54,6 +55,12 @@ struct BatchSizeUpdate {
 #[derive(Serialize, Clone, Debug)]
 struct BatchStructureUpdate {
     updates: Vec<StructureUpdate>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct ProgressUpdate {
+    scanned_count: u64,
+    current_path: String,
 }
 
 fn emit_batch_structure_updates(
@@ -139,6 +146,56 @@ async fn open_in_explorer(path: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct DiskStats {
+    pub total: u64,
+    pub used: u64,
+    pub available: u64,
+    pub mount_point: String,
+    pub name: String,
+}
+
+#[tauri::command]
+fn get_disk_stats(path: String) -> Result<Option<DiskStats>, String> {
+    let disks = Disks::new_with_refreshed_list();
+    let path_buf = PathBuf::from(&path);
+    
+    // Normalize path for comparison (canonicalize if possible to handle symlinks/relative paths)
+    let abs_path = if let Ok(p) = fs::canonicalize(&path_buf) {
+        p
+    } else {
+        path_buf.clone()
+    };
+
+    // Find the disk that contains this path
+    // We try to find the longest matching mount point to handle nested mount points
+    let mut best_match: Option<&sysinfo::Disk> = None;
+    let mut best_match_len = 0;
+
+    for disk in &disks {
+        let mount_point = disk.mount_point();
+        if abs_path.starts_with(mount_point) {
+            let len = mount_point.as_os_str().len();
+            if len > best_match_len {
+                best_match = Some(disk);
+                best_match_len = len;
+            }
+        }
+    }
+
+    if let Some(disk) = best_match {
+        return Ok(Some(DiskStats {
+            total: disk.total_space(),
+            used: disk.total_space() - disk.available_space(),
+            available: disk.available_space(),
+            mount_point: disk.mount_point().to_string_lossy().to_string(),
+            name: disk.name().to_string_lossy().to_string(),
+        }));
+    }
+    
+    Ok(None)
 }
 
 #[cfg(target_os = "windows")]
@@ -273,10 +330,23 @@ fn run_background_scan(
     // 使用 WalkDir 进行深度优先遍历
     // Use WalkDir for deep traversal
     let walker = WalkDir::new(&root_path_buf).into_iter();
+    let mut scanned_count = 0u64;
+    let mut last_progress_emit = Instant::now();
     
     // 不再使用 filter_map(|e| e.ok()) 忽略错误，而是显式处理
     // Don't use filter_map(|e| e.ok()) to ignore errors, handle them explicitly
     for entry_result in walker.filter_entry(|e| !is_ignored_path(e.path())) {
+        scanned_count += 1;
+        
+        // Emit progress every 100ms
+        if last_progress_emit.elapsed() >= Duration::from_millis(100) {
+            let _ = app_handle.emit("scan-progress", ProgressUpdate {
+                scanned_count,
+                current_path: entry_result.as_ref().ok().map(|e| e.path().to_string_lossy().to_string()).unwrap_or_default(),
+            });
+            last_progress_emit = Instant::now();
+        }
+
         let entry = match entry_result {
             Ok(e) => e,
             Err(err) => {
@@ -284,12 +354,48 @@ fn run_background_scan(
                 // If error encountered (e.g. Permission Denied), try to mark path as restricted
                 if let Some(path) = err.path() {
                     let p_str = normalize_path_string(&path.to_string_lossy());
-                    // 只在它是目录时记录？通常 WalkDir 错误是在尝试进入目录时发生的
-                    // Usually WalkDir error happens when trying to enter a directory
-                    let stats = dir_stats.entry(p_str.clone()).or_insert((0, 0, 0, false));
-                    stats.3 = true; // is_restricted = true
-                    pending_updates.insert(p_str);
-                    eprintln!("Error accessing {}: {}", path.display(), err);
+                    
+                    // 尝试恢复数据：即使遍历失败，也尝试获取文件/目录本身的大小
+                    // Try to recover: even if traversal fails, try to get size of file/dir itself
+                    if let Ok(meta) = fs::symlink_metadata(path) {
+                        let size = meta.len();
+                        let allocated = get_allocated_size(path, size);
+                        let is_dir = meta.is_dir();
+
+                        if is_dir {
+                            // It's a directory we can't enter. Mark it restricted.
+                            let stats = dir_stats.entry(p_str.clone()).or_insert((0, 0, 0, false));
+                            stats.3 = true;
+                            pending_updates.insert(p_str.clone());
+                        }
+
+                        // Update parents
+                        let mut current = path.parent();
+                        while let Some(p) = current {
+                            if !p.starts_with(&root_path_buf) && p != root_path_buf {
+                                break;
+                            }
+                            let p_str_parent = normalize_path_string(&p.to_string_lossy());
+                            let stats = dir_stats.entry(p_str_parent.clone()).or_insert((0, 0, 0, false));
+                            stats.0 += size;
+                            stats.1 += allocated;
+                            if !is_dir {
+                                stats.2 += 1;
+                            }
+                            pending_updates.insert(p_str_parent);
+                            
+                            if p == root_path_buf {
+                                break;
+                            }
+                            current = p.parent();
+                        }
+                    } else {
+                        // Completely inaccessible
+                        let stats = dir_stats.entry(p_str.clone()).or_insert((0, 0, 0, false));
+                        stats.3 = true; // is_restricted = true
+                        pending_updates.insert(p_str);
+                    }
+                    // eprintln!("Error accessing {}: {}", path.display(), err);
                 }
                 continue;
             }
@@ -306,37 +412,65 @@ fn run_background_scan(
         let meta = match entry.metadata() {
             Ok(m) => m,
             Err(_) => {
-                // 如果无法获取元数据，标记父目录受限
-                if let Some(parent) = path.parent() {
-                    let parent_str = normalize_path_string(&parent.to_string_lossy());
-                    let stats = dir_stats.entry(parent_str.clone()).or_insert((0, 0, 0, false));
-                    stats.3 = true;
-                    pending_updates.insert(parent_str);
+                // Fallback: try to get metadata directly using fs::symlink_metadata
+                // This might succeed where WalkDir's cached metadata failed or was incomplete
+                match fs::symlink_metadata(path) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        // 如果无法获取元数据，标记父目录受限
+                        if let Some(parent) = path.parent() {
+                            let parent_str = normalize_path_string(&parent.to_string_lossy());
+                            let stats = dir_stats.entry(parent_str.clone()).or_insert((0, 0, 0, false));
+                            stats.3 = true;
+                            pending_updates.insert(parent_str);
+                        }
+                        continue;
+                    }
                 }
-                continue;
             }
         };
 
         if meta.is_dir() {
-            let depth = entry.depth();
+            let _depth = entry.depth();
             // Phase 1 covers depth 0 (root) and depth 1 (immediate children).
             // We need to scan and emit structure for depth >= 1 to populate depth 2 and deeper.
             // Phase 1 覆盖了第 0 层（根）和第 1 层（直接子节点）。
             // 我们需要为 depth >= 1 扫描并发送结构，以填充第 2 层及更深层级。
-            // FIX: Only emit structure for depth >= MAX_INITIAL_DEPTH to avoid overwriting existing deep structure
-            // 修复：只为 depth >= MAX_INITIAL_DEPTH 发送结构，避免覆盖已有的深层结构
-            if depth >= MAX_INITIAL_DEPTH {
+            // FIX: Always emit structure updates to ensure full tree consistency, relying on frontend merging logic
+            // 修复：始终发送结构更新以确保数据的完整性，依赖前端的合并逻辑来防止覆盖
+            // if depth >= MAX_INITIAL_DEPTH {
                  if let Some(update) = scan_directory_structure(&path) {
                     pending_structures.push(update);
                  }
-            }
+            // }
 
             // 确保目录在 map 中存在
             let p_str = normalize_path_string(&path.to_string_lossy());
             dir_stats.entry(p_str.clone()).or_insert((0, 0, 0, false));
-            // Removed pending_updates.insert(p_str) to avoid premature "0 B" updates
-            // 移除了 pending_updates.insert(p_str) 以避免过早发送 "0 B" 更新，
-            // 只有当计算出大小后才发送更新，或者在扫描结束时统一处理空目录。
+            
+            // Add directory's OWN size (metadata) to parents
+            // 将目录自身的大小（元数据）添加到父目录统计中
+            let size = meta.len();
+            let allocated = get_allocated_size(path, size);
+            
+            let mut current = path.parent();
+            while let Some(p) = current {
+                if !p.starts_with(&root_path_buf) && p != root_path_buf {
+                    break;
+                }
+                
+                let p_str_parent = normalize_path_string(&p.to_string_lossy());
+                let stats = dir_stats.entry(p_str_parent.clone()).or_insert((0, 0, 0, false));
+                stats.0 += size;
+                stats.1 += allocated;
+                // Don't increment file count for directories
+                pending_updates.insert(p_str_parent);
+
+                if p == root_path_buf {
+                    break;
+                }
+                current = p.parent();
+            }
         } else {
             // 是文件
             let size = meta.len();
@@ -455,7 +589,7 @@ fn try_mark_in_progress(
     true
 }
 
-const MAX_INITIAL_DEPTH: usize = 9;
+const MAX_INITIAL_DEPTH: usize = 2;
 
 /// 递归构建文件树
 fn build_file_tree(
@@ -503,59 +637,65 @@ fn build_file_tree(
         let mut calculated_allocated: u64 = 0;
 
         // 如果未达到最大深度，递归读取子节点
-        if current_depth < max_depth {
-            match fs::read_dir(path) {
-                Ok(entries) => {
-                    let mut child_nodes = Vec::new();
-                    for entry in entries.flatten() {
-                        let entry_path = entry.path();
-                        if let Some(child_node) = build_file_tree(&entry_path, current_depth + 1, max_depth, state) {
-                            let child_size = child_node.size.unwrap_or(0);
-                            let child_allocated = child_node.allocated_size.unwrap_or(0);
-                            
-                            calculated_size += child_size;
-                            calculated_allocated += child_allocated;
+            let mut is_partial_scan = false;
+            if current_depth < max_depth {
+                match fs::read_dir(path) {
+                    Ok(entries) => {
+                        let mut child_nodes = Vec::new();
+                        for entry in entries.flatten() {
+                            let entry_path = entry.path();
+                            if let Some(child_node) = build_file_tree(&entry_path, current_depth + 1, max_depth, state) {
+                                let child_size = child_node.size.unwrap_or(0);
+                                let child_allocated = child_node.allocated_size.unwrap_or(0);
+                                
+                                calculated_size += child_size;
+                                calculated_allocated += child_allocated;
 
-                            if !child_node.is_dir {
-                                base_size += child_size;
-                                base_allocated_size += child_allocated;
-                                file_count += 1;
+                                if !child_node.is_dir {
+                                    base_size += child_size;
+                                    base_allocated_size += child_allocated;
+                                    file_count += 1;
+                                }
+                                child_nodes.push(child_node);
                             }
-                            child_nodes.push(child_node);
                         }
-                    }
 
-                    // 排序
-                    child_nodes.sort_by(|a, b| {
-                        let a_is_dir = a.is_dir;
-                        let b_is_dir = b.is_dir;
-                        if a_is_dir && !b_is_dir {
-                            std::cmp::Ordering::Less
-                        } else if !a_is_dir && b_is_dir {
-                            std::cmp::Ordering::Greater
-                        } else {
-                            let size_a = a.size.unwrap_or(0);
-                            let size_b = b.size.unwrap_or(0);
-                            if size_a != size_b {
-                                size_b.cmp(&size_a)
+                        // 排序
+                        child_nodes.sort_by(|a, b| {
+                            let a_is_dir = a.is_dir;
+                            let b_is_dir = b.is_dir;
+                            if a_is_dir && !b_is_dir {
+                                std::cmp::Ordering::Less
+                            } else if !a_is_dir && b_is_dir {
+                                std::cmp::Ordering::Greater
                             } else {
-                                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                                let size_a = a.size.unwrap_or(0);
+                                let size_b = b.size.unwrap_or(0);
+                                if size_a != size_b {
+                                    size_b.cmp(&size_a)
+                                } else {
+                                    a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                                }
                             }
-                        }
-                    });
+                        });
 
-                    children = Some(child_nodes);
+                        children = Some(child_nodes);
+                    }
+                    Err(_) => {
+                        is_restricted = true;
+                        is_partial_scan = true;
+                    }
                 }
-                Err(_) => {
-                    is_restricted = true;
-                }
+            } else {
+                is_partial_scan = true;
             }
-        }
 
-        // 如果缓存有值，优先使用缓存的统计数据；否则使用递归计算的初步数据
-        let final_size = cached_size.or(Some(calculated_size));
-        let final_allocated = cached_allocated.or(Some(calculated_allocated));
-        let final_file_count = if cached_count > 0 { cached_count } else { file_count };
+            // 如果缓存有值，优先使用缓存的统计数据；
+            // 否则，如果是部分扫描（未达到底部或读取失败），则 size 为 None，表示 "Calculating..."
+            // 这样前端就不会用 0 覆盖旧的统计数据
+            let final_size = cached_size.or(if is_partial_scan { None } else { Some(calculated_size) });
+            let final_allocated = cached_allocated.or(if is_partial_scan { None } else { Some(calculated_allocated) });
+            let final_file_count = if cached_count > 0 { cached_count } else { file_count };
 
         Some(FileNode {
             name,
@@ -657,7 +797,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             analyze_directory,
-            open_in_explorer
+            open_in_explorer,
+            get_disk_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
