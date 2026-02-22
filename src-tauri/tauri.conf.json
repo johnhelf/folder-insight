@@ -2,7 +2,6 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Folder Insight",
   "version": "1.1.3",
-  "version": "1.1.2",
   "identifier": "com.xiaoyu.folder-insight",
   "build": {
     "beforeDevCommand": "npm run dev",
