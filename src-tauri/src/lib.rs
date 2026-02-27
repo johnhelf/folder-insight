@@ -220,11 +220,17 @@ fn get_allocated_size(path: &Path, logical_size: u64) -> u64 {
 }
 
 /// 扫描并返回结构更新，但不发送
-fn scan_directory_structure(path: &Path) -> Option<StructureUpdate> {
+fn scan_directory_structure(path: &Path, root_path: &Path) -> Option<StructureUpdate> {
     if let Ok(entries) = fs::read_dir(path) {
         let mut children = Vec::new();
         for child in entries.flatten() {
             let child_path = child.path();
+
+            // 过滤被忽略的系统路径
+            if is_ignored_path(&child_path, root_path) {
+                continue;
+            }
+
             let child_name = child_path.file_name().unwrap_or_default().to_string_lossy().to_string();
             let child_meta = child.metadata().ok();
             let is_dir = child_meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
@@ -268,6 +274,39 @@ fn scan_directory_structure(path: &Path) -> Option<StructureUpdate> {
     None
 }
 
+/// 判断路径是否应该被忽略（如 Linux 下的虚拟/挂载文件夹）
+#[allow(unused_variables)]
+fn is_ignored_path(p: &Path, root_path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if p.starts_with("/dev") { return true; }
+        if p.starts_with("/System/Volumes") {
+            // 如果我们正在扫描里面，则不忽略
+            if root_path.starts_with("/System/Volumes") {
+                return false;
+            }
+            return true;
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // 忽略 Linux 上的虚拟/临时/挂载文件夹
+        let system_paths = ["/proc", "/sys", "/dev", "/run", "/media", "/mnt", "/tmp", "/var/tmp"];
+        for sys_p in system_paths {
+            if p.starts_with(sys_p) {
+                // 如果我们扫描的根路径就是这个系统路径或其子路径，则不忽略
+                if root_path.starts_with(sys_p) {
+                    return false;
+                }
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// 扫描并发送结构更新（兼容旧逻辑，用于Phase 1） - DEPRECATED / REMOVED
 // fn scan_and_emit_structure(path: &Path, app_handle: &AppHandle) {
 //     if let Some(update) = scan_directory_structure(path) {
@@ -287,45 +326,6 @@ fn run_background_scan(
     let mut pending_updates: HashSet<String> = HashSet::new();
     let mut pending_structures: Vec<StructureUpdate> = Vec::new();
 
-    // Linux-specific: Ignore /proc, /sys, /dev, /run, /tmp
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let is_ignored_path = |p: &Path| -> bool {
-        let path_str = p.to_string_lossy();
-        if path_str.starts_with("/proc") || 
-           path_str.starts_with("/sys") || 
-           path_str.starts_with("/dev") ||
-           path_str.starts_with("/run") {
-            return true;
-        }
-        false
-    };
-
-    // macOS-specific: Ignore /System/Volumes to avoid duplicates
-    #[cfg(target_os = "macos")]
-    let is_ignored_path = {
-        let filter_root = root_path_buf.clone();
-        move |p: &Path| -> bool {
-            if p.starts_with("/dev") { return true; }
-            if p.starts_with("/System/Volumes") {
-                // Only ignore if we are not scanning inside it
-                if filter_root.starts_with("/System/Volumes") {
-                    return false;
-                }
-                return true;
-            }
-            false
-        }
-    };
-
-    #[cfg(not(unix))]
-    let is_ignored_path = |_: &Path| -> bool { false };
-
-    // Phase 1: Rapid structure scan - REMOVED
-    // 由于 analyze_directory 现在已经扫描了足够的深度 (MAX_INITIAL_DEPTH=9)，
-    // 我们不再需要快速扫描前两层，这避免了用浅层结构覆盖深层结构的风险。
-    // Since analyze_directory now scans enough depth (MAX_INITIAL_DEPTH=9),
-    // we no longer need rapid scan for first 2 layers, avoiding risk of overwriting deep structure with shallow one.
-    
     // Phase 2: Full Deep Scan (WalkDir)
     // 使用 WalkDir 进行深度优先遍历
     // Use WalkDir for deep traversal
@@ -335,7 +335,7 @@ fn run_background_scan(
     
     // 不再使用 filter_map(|e| e.ok()) 忽略错误，而是显式处理
     // Don't use filter_map(|e| e.ok()) to ignore errors, handle them explicitly
-    for entry_result in walker.filter_entry(|e| !is_ignored_path(e.path())) {
+    for entry_result in walker.filter_entry(|e| !is_ignored_path(e.path(), &root_path_buf)) {
         scanned_count += 1;
         
         // Emit progress every 100ms
@@ -355,6 +355,11 @@ fn run_background_scan(
                 if let Some(path) = err.path() {
                     let p_str = normalize_path_string(&path.to_string_lossy());
                     
+                    // 过滤被忽略的路径
+                    if is_ignored_path(path, &root_path_buf) {
+                        continue;
+                    }
+
                     // 尝试恢复数据：即使遍历失败，也尝试获取文件/目录本身的大小
                     // Try to recover: even if traversal fails, try to get size of file/dir itself
                     if let Ok(meta) = fs::symlink_metadata(path) {
@@ -405,7 +410,7 @@ fn run_background_scan(
         // let depth = entry.depth(); // Not needed for structure anymore
         
         // Double check for root path itself if it's one of the ignored paths
-        if is_ignored_path(path) {
+        if is_ignored_path(path, &root_path_buf) {
             continue;
         }
 
@@ -439,7 +444,7 @@ fn run_background_scan(
             // FIX: Always emit structure updates to ensure full tree consistency, relying on frontend merging logic
             // 修复：始终发送结构更新以确保数据的完整性，依赖前端的合并逻辑来防止覆盖
             // if depth >= MAX_INITIAL_DEPTH {
-                 if let Some(update) = scan_directory_structure(&path) {
+                 if let Some(update) = scan_directory_structure(&path, &root_path_buf) {
                     pending_structures.push(update);
                  }
             // }
