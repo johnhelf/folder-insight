@@ -126,19 +126,16 @@ function App() {
       return;
     }
 
-    const hasShownSponsor = localStorage.getItem(HAS_SHOWN_SPONSOR_KEY) === 'true';
-    const hasShownRate = localStorage.getItem(HAS_SHOWN_RATE_KEY) === 'true';
+    let hasShownSponsor = localStorage.getItem(HAS_SHOWN_SPONSOR_KEY) === 'true';
+    let hasShownRate = localStorage.getItem(HAS_SHOWN_RATE_KEY) === 'true';
 
-    // 如果两个都显示过了，就不再显示 / If both shown, stop
+    // 如果两个都显示过了，重置状态以开启新一轮交替循环
+    // If both shown, reset state to start a new alternating cycle
     if (hasShownSponsor && hasShownRate) {
-      return;
-    }
-
-    // 检查距离上次弹窗的时间，确保不会连续弹出（至少间隔1天）
-    // Check time since last modal to avoid consecutive popups (at least 1 day gap)
-    const lastModalShowTime = parseInt(localStorage.getItem(LAST_MODAL_SHOW_TIME_KEY) || '0', 10);
-    if (now - lastModalShowTime < 24 * 60 * 60 * 1000) {
-      return;
+      hasShownSponsor = false;
+      hasShownRate = false;
+      localStorage.setItem(HAS_SHOWN_SPONSOR_KEY, 'false');
+      localStorage.setItem(HAS_SHOWN_RATE_KEY, 'false');
     }
 
     // 互斥检查 / Mutex check
@@ -161,7 +158,7 @@ function App() {
         localStorage.setItem(HAS_SHOWN_RATE_KEY, 'true');
         localStorage.setItem(LAST_MODAL_SHOW_TIME_KEY, now.toString());
       } else {
-        // 非Windows系统，标记为已显示，以免下次还尝试显示
+        // 非Windows系统，标记为已显示，以便下次还尝试显示
         // Non-Windows, mark as shown to avoid retry
         localStorage.setItem(HAS_SHOWN_RATE_KEY, 'true');
       }
