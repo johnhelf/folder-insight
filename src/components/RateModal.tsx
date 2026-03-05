@@ -7,9 +7,10 @@ interface RateModalProps {
   isOpen: boolean;
   onClose: () => void;
   t: (key: string, params?: Record<string, string>) => string;
+  isRTL?: boolean;
 }
 
-export const RateModal: React.FC<RateModalProps> = ({ isOpen, onClose, t }) => {
+export const RateModal: React.FC<RateModalProps> = ({ isOpen, onClose, t, isRTL = false }) => {
   if (!isOpen) return null;
 
   /**
@@ -29,7 +30,7 @@ export const RateModal: React.FC<RateModalProps> = ({ isOpen, onClose, t }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" dir={isRTL ? "rtl" : "ltr"}>
       <div 
         className="absolute inset-0 bg-black/40 backdrop-blur-sm"
         onClick={onClose}

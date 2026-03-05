@@ -5,13 +5,14 @@ interface SponsorModalProps {
   isOpen: boolean;
   onClose: () => void;
   t: (key: string, params?: Record<string, string>) => string;
+  isRTL?: boolean;
 }
 
-export const SponsorModal: React.FC<SponsorModalProps> = ({ isOpen, onClose, t }) => {
+export const SponsorModal: React.FC<SponsorModalProps> = ({ isOpen, onClose, t, isRTL = false }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" dir={isRTL ? "rtl" : "ltr"}>
       <div 
         className="absolute inset-0 bg-black/40 backdrop-blur-sm"
         onClick={onClose}
@@ -30,7 +31,7 @@ export const SponsorModal: React.FC<SponsorModalProps> = ({ isOpen, onClose, t }
             </div>
             <button 
               onClick={onClose}
-              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors text-gray-500 dark:text-gray-400"
             >
               <X size={20} />
             </button>

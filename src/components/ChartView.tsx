@@ -9,6 +9,7 @@ interface ChartViewProps {
   chartData: EChartsNode | null; // This is the tree structure for Sunburst
   categoryData: any[]; // Keep for category mode
   t: (key: string, params?: Record<string, any>) => string;
+  isRTL?: boolean;
   onDrillDown?: (path: string) => void;
   onGoUp?: () => void;
   onGoRoot?: () => void;
@@ -21,6 +22,7 @@ export const ChartView: React.FC<ChartViewProps> = ({
   chartData, 
   categoryData,
   t, 
+  isRTL = false,
   onDrillDown,
   onGoUp,
   onGoRoot,
@@ -42,33 +44,36 @@ export const ChartView: React.FC<ChartViewProps> = ({
         trigger: 'item',
         formatter: (params: any) => {
           const item = params.data;
-          // For pie chart, percent is available. For bar chart, we might need to calculate it or just show size.
           const percentStr = params.percent ? ` (${params.percent}%)` : '';
           return `${item.name}: ${item.formattedSize}${percentStr}`;
         }
       },
       grid: {
-        left: '55%', // Bar chart on the right
-        right: '2%', 
+        left: isRTL ? '5%' : '55%',
+        right: isRTL ? '55%' : '5%',
         top: '2%',
         bottom: '2%',
         containLabel: true
       },
       xAxis: {
         type: 'value',
-        show: false, // Hide x-axis for cleaner look
-        splitLine: { show: false }
+        show: false,
+        splitLine: { show: false },
+        inverse: isRTL
       },
       yAxis: {
         type: 'category',
         data: categories,
-        inverse: true, // Top items first
+        inverse: true,
         axisLine: { show: false },
         axisTick: { show: false },
         axisLabel: {
-          width: 80,
-          overflow: 'truncate'
-        }
+          width: 90,
+          overflow: 'truncate',
+          margin: isRTL ? 40 :10,
+          align: isRTL ? 'left' : 'right', 
+        },
+        position: isRTL ? 'right' : 'left'
       },
       series: [
         {
@@ -79,23 +84,24 @@ export const ChartView: React.FC<ChartViewProps> = ({
           itemStyle: {
             borderRadius: 4,
             color: (params: any) => {
-              // Use a palette or consistent colors if needed
               const colors = ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc'];
               return colors[params.dataIndex % colors.length];
             }
           },
           label: {
             show: true,
-            position: 'right',
-            formatter: (params: any) => params.data.formattedSize
+            position: isRTL ? 'left' : 'right',
+            distance: isRTL ? 55 :10,
+            formatter: (params: any) => params.data.formattedSize,
+            fontSize: 10
           }
         },
         {
           name: t('categoryStatsTitle'),
           type: 'pie',
-          radius: ['40%', '70%'],
-          center: ['25%', '50%'], // Position on the left side
-          avoidLabelOverlap: false,
+          radius: ['35%', '65%'],
+          center: isRTL ? ['80%', '50%'] : ['20%', '50%'], 
+          avoidLabelOverlap: true,
           itemStyle: {
             borderRadius: 10,
             borderColor: '#fff',
@@ -194,7 +200,7 @@ export const ChartView: React.FC<ChartViewProps> = ({
         {mode === 'breakdown' ? (
           <D3SunburstView 
             data={chartData} 
-            t={t} 
+            isRTL={isRTL}
             onDrillDown={onDrillDown} 
             onGoUp={onGoUp} 
             canGoUp={canGoUp} 

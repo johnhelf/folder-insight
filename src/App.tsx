@@ -24,6 +24,7 @@ import {
   getLocaleNativeName,
   persistLanguageMode,
   resolveLocale,
+  isRTLLocale,
   type LanguageMode,
 } from "./i18n";
 import { processForSunburst, processForTreemap } from './chartHelpers';
@@ -73,6 +74,7 @@ function App() {
   // const pausedUpdates = useRef<Map<string, SizeUpdate>>(new Map());
   const needsSort = useRef(false);
   const isRefreshing = useRef(false); // Flag to pause updates during refresh
+  const hasCheckedModalRef = useRef(false); // 防止双重弹窗 / Prevent double modal show
 
   // 定时排序逻辑：每5秒检查是否需要排序
   // Interval sorting logic: check every 5s if sorting is needed
@@ -106,6 +108,8 @@ function App() {
   // 弹窗自动弹出逻辑 (赞助 & 评分) / Auto-show modal logic (Sponsor & Rate)
   useEffect(() => {
     if (!isTauri()) return;
+    if (hasCheckedModalRef.current) return;
+    hasCheckedModalRef.current = true;
 
     const now = Date.now();
     const FIRST_RUN_TIME_KEY = 'first_run_time';
@@ -175,7 +179,7 @@ function App() {
   } | null>(null);
 
   const locale = useMemo(() => resolveLocale(languageMode, systemLocale), [languageMode, systemLocale]);
-  const isRTL = locale === 'ar';
+  const isRTL = useMemo(() => isRTLLocale(locale), [locale]);
   const t = useMemo(() => createTranslator(locale), [locale]);
   const numberLocale = locale === 'zh' ? 'zh-CN' : 'en-US';
 
@@ -633,6 +637,7 @@ function App() {
         { mode: 'es', label: getLocaleNativeName('es') },
         { mode: 'fr', label: getLocaleNativeName('fr') },
         { mode: 'de', label: getLocaleNativeName('de') },
+        { mode: 'it', label: getLocaleNativeName('it') },
       ] as const),
     [systemLocale, t],
   );
@@ -1029,8 +1034,8 @@ function App() {
     if (!targetNode) return null;
 
     // 环形图专用处理逻辑，保留角度聚合
-    return processForSunburst(targetNode, 7);
-  }, [data, currentViewPath]);
+    return processForSunburst(targetNode, 7, 0, 0, t);
+  }, [data, currentViewPath, t]);
 
   const treemapData = useMemo(() => {
     if (!data) return null;
@@ -1329,7 +1334,7 @@ function App() {
               </button>
               {isLanguageMenuOpen && (
                 <div className={cn(
-                  "absolute mt-2 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[200px]",
+                  "absolute mt-2 z-1000 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[200px]",
                   isRTL ? "left-0" : "right-0"
                 )}>
                   <div className={cn(
@@ -1617,8 +1622,9 @@ function App() {
                       loadingPaths={loadingPaths}
                       onToggleExpand={toggleExpand}
                       onContextMenu={handleContextMenu}
-                    t={t}
-                  />
+                      t={t}
+                      isRTL={isRTL}
+                    />
                   </motion.div>
                 ) : view === 'treemap' ? (
                   <motion.div
@@ -1633,6 +1639,7 @@ function App() {
                       <TreemapView 
                         data={debouncedEChartsData}
                         t={t}
+                        isRTL={isRTL}
                         onDrillDown={handleChartDrillDown}
                         onGoUp={handleGoUp}
                         onGoRoot={handleGoRoot}
@@ -1655,6 +1662,7 @@ function App() {
                       <FileTypeView 
                         data={data}
                         t={t}
+                        isRTL={isRTL}
                         onContextMenu={handleContextMenu}
                       />
                     </Suspense>
@@ -1673,6 +1681,7 @@ function App() {
                         chartData={debouncedEChartsData}
                         categoryData={categoryData}
                         t={t}
+                        isRTL={isRTL}
                         onDrillDown={handleChartDrillDown}
                         onGoUp={handleGoUp}
                         onGoRoot={handleGoRoot}
@@ -1694,6 +1703,7 @@ function App() {
         isOpen={isSponsorModalOpen} 
         onClose={() => setIsSponsorModalOpen(false)} 
         t={t}
+        isRTL={isRTL}
       />
 
       {/* 评分弹窗 / Rate Modal */}
@@ -1701,6 +1711,7 @@ function App() {
         isOpen={isRateModalOpen} 
         onClose={() => setIsRateModalOpen(false)} 
         t={t}
+        isRTL={isRTL}
       />
     </div>
   );

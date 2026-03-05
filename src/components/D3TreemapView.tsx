@@ -5,12 +5,14 @@ import { formatSize } from '../utils';
 
 interface D3TreemapViewProps {
   data: EChartsNode | null;
+  isRTL?: boolean;
   onDrillDown?: (path: string) => void;
   onContextMenu?: (e: React.MouseEvent | MouseEvent, path: string) => void;
 }
 
 export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
   data,
+  isRTL = false,
   onDrillDown,
   onContextMenu
 }) => {
@@ -240,6 +242,7 @@ export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
             .text(d.data.name)
             .attr("font-size", "10px")
             .attr("font-weight", "bold")
+            .attr("text-anchor", isRTL ? "end" : "start")
             .attr("fill", "currentColor")
             .attr("class", "text-gray-500 dark:text-gray-400") // Muted text for parents
             .style("pointer-events", "none");
@@ -284,12 +287,13 @@ export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
             .text(d.data.name)
             .attr("font-size", "13px") // Restored/Increased size
             .attr("font-weight", "500")
+            .attr("text-anchor", isRTL ? "end" : "start")
             // Contrast text color: Dark text for light mode (pastels), Light text for dark mode (deep colors)
             .attr("fill", isDarkMode ? "#f1f5f9" : "#1e293b") // slate-100 (Dark Mode) / slate-800 (Light Mode)
             .style("pointer-events", "none"); // Ensure text doesn't block mouse events
     });
 
-  }, [data, isDarkMode, dimensions]); // Re-run when dark mode or dimensions change
+  }, [data, isDarkMode, dimensions, isRTL]); // Re-run when dark mode or dimensions change
 
   return (
     <div 

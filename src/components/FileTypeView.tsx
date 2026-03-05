@@ -26,6 +26,7 @@ import { aggregateCategoryStats, FileCategory } from '../utils/fileTypeStats';
 interface FileTypeViewProps {
   data: FileNode;
   t: (key: string, params?: any) => string;
+  isRTL?: boolean;
   onContextMenu?: (e: React.MouseEvent, path: string) => void;
 }
 
@@ -52,7 +53,7 @@ type SortDirection = 'asc' | 'desc';
  * 文件类型统计视图组件
  * File Type Statistics View Component
  */
-export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, onContextMenu }) => {
+export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, isRTL = false, onContextMenu }) => {
   const [selectedCategory, setSelectedCategory] = useState<FileCategory | null>(null);
   const [sortField, setSortField] = useState<SortField>('size');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
@@ -98,48 +99,51 @@ export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, onContextMe
 
     const SortIcon = ({ field }: { field: SortField }) => {
       if (sortField !== field) return null;
-      return sortDirection === 'asc' ? <ArrowUp size={14} className="ml-1 inline" /> : <ArrowDown size={14} className="ml-1 inline" />;
+      return sortDirection === 'asc' ? <ArrowUp size={14} className={cn(isRTL ? "mr-1" : "ml-1", "inline")} /> : <ArrowDown size={14} className={cn(isRTL ? "mr-1" : "ml-1", "inline")} />;
     };
 
     return (
-      <div className="h-full flex flex-col animate-in fade-in slide-in-from-right-4 duration-300">
-        <div className="flex items-center mb-1 shrink-0 gap-2">
-          <div className="flex items-center gap-2 min-w-0">
+      <div 
+        className={cn("h-full flex flex-col animate-in fade-in slide-in-from-right-4 duration-300", isRTL && "text-right")}
+        dir={isRTL ? "rtl" : "ltr"}
+      >
+        <div className={cn("flex items-center mb-1 shrink-0 gap-2", isRTL && "flex-row-reverse")}>
+          <div className={cn("flex items-center gap-2 min-w-0", isRTL && "flex-row-reverse")}>
             <button 
               onClick={() => setSelectedCategory(null)}
               className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors shrink-0"
             >
-              <ArrowLeft size={16} />
+              {isRTL ? <ChevronRight size={16} /> : <ArrowLeft size={16} />}
             </button>
             <div className={cn("p-1 rounded-lg shrink-0", Config.color)}>
               <Icon size={18} />
             </div>
             <h2 className="text-base font-bold truncate">{t(Config.labelKey)}</h2>
           </div>
-          <p className="text-sm text-gray-500 dark:text-gray-400 whitespace-nowrap shrink-0 ml-2">
+          <p className={cn("text-sm text-gray-500 dark:text-gray-400 whitespace-nowrap shrink-0", isRTL ? "mr-2" : "ml-2")}>
             {formatSize(categoryData.size)} · {t('itemsCount', { count: categoryData.count.toLocaleString() })}
           </p>
         </div>
 
         <div className="flex-1 overflow-hidden flex flex-col bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
           <div className="overflow-auto overflow-x-hidden flex-1">
-            <table className="w-full text-left text-sm table-fixed">
+            <table className={cn("w-full text-sm table-fixed", isRTL ? "text-right" : "text-left")}>
               <thead className="bg-gray-50 dark:bg-gray-900/50 sticky top-0 z-10">
                 <tr>
                   <th 
-                    className="px-4 py-2 font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors select-none w-auto"
+                    className={cn("px-4 py-2 font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors select-none w-auto", isRTL ? "text-right" : "text-left")}
                     onClick={() => handleSort('name')}
                   >
                     {t('sortByName')} <SortIcon field="name" />
                   </th>
                   <th 
-                    className="px-4 py-2 font-medium text-gray-500 dark:text-gray-400 text-right cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors select-none w-36"
+                    className={cn("px-4 py-2 font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors select-none w-48", isRTL ? "text-left" : "text-right")}
                     onClick={() => handleSort('date')}
                   >
-                    {t('sortByDate')} <SortIcon field="date" />
+                    {t('dateModified')} <SortIcon field="date" />
                   </th>
                   <th 
-                    className="px-4 py-2 font-medium text-gray-500 dark:text-gray-400 text-right cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors select-none w-24"
+                    className={cn("px-4 py-2 font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors select-none w-28", isRTL ? "text-left" : "text-right")}
                     onClick={() => handleSort('size')}
                   >
                     {t('sortBySize')} <SortIcon field="size" />
@@ -154,18 +158,18 @@ export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, onContextMe
                     onContextMenu={(e) => onContextMenu && onContextMenu(e, file.path)}
                   >
                     <td className="px-4 py-2 overflow-hidden">
-                      <div className="flex items-center gap-2">
+                      <div className={cn("flex items-center gap-2", isRTL && "flex-row-reverse")}>
                         <File size={16} className="text-gray-400 shrink-0" />
-                        <div className="flex flex-col min-w-0 overflow-hidden">
+                        <div className={cn("flex flex-col min-w-0 overflow-hidden", isRTL && "items-end")}>
                           <span className="truncate font-medium text-gray-700 dark:text-gray-200" title={file.name}>{file.name}</span>
                           <span className="truncate text-xs text-gray-400" title={file.path}>{file.path}</span>
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-2 text-right text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                    <td className={cn("px-4 py-2 text-gray-500 dark:text-gray-400 whitespace-nowrap", isRTL ? "text-left" : "text-right")}>
                       {file.last_modified ? new Date(file.last_modified > 10000000000 ? file.last_modified : file.last_modified * 1000).toLocaleString() : '-'}
                     </td>
-                    <td className="px-4 py-2 text-right font-mono text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                    <td className={cn("px-4 py-2 font-mono text-gray-600 dark:text-gray-300 whitespace-nowrap", isRTL ? "text-left" : "text-right")}>
                       {formatSize(file.size)}
                     </td>
                   </tr>
@@ -202,13 +206,16 @@ export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, onContextMe
             <button
               key={cat}
               onClick={() => setSelectedCategory(cat)}
-              className="flex flex-col p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md hover:border-blue-300 dark:hover:border-blue-700 transition-all text-left group"
+              className={cn(
+                "flex flex-col p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md hover:border-blue-300 dark:hover:border-blue-700 transition-all group",
+                isRTL ? "text-right" : "text-left"
+              )}
             >
-              <div className="flex items-center justify-between w-full mb-3">
+              <div className={cn("flex items-center justify-between w-full mb-3", isRTL && "flex-row-reverse")}>
                 <div className={cn("p-3 rounded-xl transition-colors group-hover:scale-110 duration-200", Config.color)}>
                   <Icon size={24} />
                 </div>
-                <div className="flex items-center text-gray-400 group-hover:text-blue-500 transition-colors">
+                <div className={cn("flex items-center text-gray-400 group-hover:text-blue-500 transition-colors", isRTL && "rotate-180")}>
                   <ChevronRight size={20} />
                 </div>
               </div>
@@ -217,7 +224,7 @@ export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, onContextMe
                 <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-1">
                   {t(Config.labelKey)}
                 </h3>
-                <div className="flex items-baseline gap-2 mb-2">
+                <div className={cn("flex items-baseline gap-2 mb-2", isRTL && "flex-row-reverse")}>
                   <span className="text-2xl font-bold text-gray-900 dark:text-white">
                     {formatSize(stat.size)}
                   </span>
@@ -227,13 +234,13 @@ export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, onContextMe
                 </div>
                 
                 {/* Progress Bar */}
-                <div className="w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden flex">
+                <div className={cn("w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden flex", isRTL && "flex-row-reverse")}>
                   <div 
                     className={cn("h-full rounded-full transition-all duration-500 ease-out", Config.color.split(' ')[0])} // use text color class for bar
                     style={{ width: `${Math.max(percent, 1)}%`, backgroundColor: 'currentColor' }}
                   />
                 </div>
-                <div className="mt-1 text-xs text-gray-400 text-right">
+                <div className={cn("mt-1 text-xs text-gray-400", isRTL ? "text-left" : "text-right")}>
                   {percent.toFixed(1)}%
                 </div>
               </div>

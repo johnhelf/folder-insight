@@ -1,4 +1,4 @@
-export type Locale = 'zh' | 'en' | 'ja' | 'ko' | 'es' | 'fr' | 'de' | 'zh_tw' | 'ru' | 'ar';
+export type Locale = 'zh' | 'en' | 'ja' | 'ko' | 'es' | 'fr' | 'de' | 'zh_tw' | 'ru' | 'ar' | 'it';
 export type LanguageMode = 'auto' | Locale;
 
 const STORAGE_KEY = 'languageMode';
@@ -14,6 +14,7 @@ const normalizeLocale = (lang: string | null | undefined): Locale => {
   if (value.startsWith('de')) return 'de';
   if (value.startsWith('ru')) return 'ru';
   if (value.startsWith('ar')) return 'ar';
+  if (value.startsWith('it')) return 'it';
   return 'en';
 };
 
@@ -21,6 +22,12 @@ export const detectSystemLocale = (): Locale => normalizeLocale(navigator.langua
 
 export const resolveLocale = (mode: LanguageMode, systemLocale: Locale): Locale =>
   mode === 'auto' ? systemLocale : mode;
+
+/**
+ * 判断当前语言是否为 RTL (从右向左)
+ * Check if the locale is RTL (Right-to-Left)
+ */
+export const isRTLLocale = (locale: Locale): boolean => locale === 'ar';
 
 export const getInitialLanguageMode = (): LanguageMode => {
   try {
@@ -36,7 +43,8 @@ export const getInitialLanguageMode = (): LanguageMode => {
       stored === 'de' ||
       stored === 'zh_tw' ||
       stored === 'ru' ||
-      stored === 'ar'
+      stored === 'ar' ||
+      stored === 'it'
     ) {
       return stored;
     }
@@ -76,6 +84,8 @@ export const getLocaleNativeName = (locale: Locale) => {
       return 'Русский';
     case 'ar':
       return 'العربية';
+    case 'it':
+      return 'Italiano';
   }
 };
 
@@ -302,6 +312,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     size: '크기',
     allocatedSize: '디스크 할당 크기',
     fileCount: '파일',
+    lastModified: '수정 날짜',
     itemsCount: '{count}개',
     restricted: '제한됨',
     calculating: '계산 중...',
@@ -343,6 +354,9 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     categoryStatsTitle: '분류 통계',
     chartModeBreakdown: '분포',
     chartModeCategory: '분류',
+    fileTypeView: '분류 통계',
+    fileCategoriesTitle: '분류 통계',
+    dateModified: '수정 날짜',
   },
   es: {
     appTitle: 'Folder Insight',
@@ -359,6 +373,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     size: 'Tamaño',
     allocatedSize: 'Asignado',
     fileCount: 'Archivos',
+    lastModified: 'Fecha de modificación',
     itemsCount: '{count} elementos',
     restricted: 'Restringido',
     calculating: 'Calculando...',
@@ -400,6 +415,9 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     categoryStatsTitle: 'Estadísticas por categoría',
     chartModeBreakdown: 'Desglose',
     chartModeCategory: 'Categoría',
+    fileTypeView: 'Categorías',
+    fileCategoriesTitle: 'Estadísticas por categoría',
+    dateModified: 'Fecha de modificación',
   },
   fr: {
     appTitle: 'Folder Insight',
@@ -416,6 +434,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     size: 'Taille',
     allocatedSize: 'Alloué',
     fileCount: 'Fichiers',
+    lastModified: 'Date de modification',
     itemsCount: '{count} éléments',
     restricted: 'Restreint',
     calculating: 'Calcul en cours...',
@@ -457,6 +476,9 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     categoryStatsTitle: 'Statistiques par catégorie',
     chartModeBreakdown: 'Répartition',
     chartModeCategory: 'Catégorie',
+    fileTypeView: 'Catégories',
+    fileCategoriesTitle: 'Statistiques par catégorie',
+    dateModified: 'Date de modification',
   },
   de: {
     appTitle: 'Folder Insight',
@@ -473,6 +495,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     size: 'Größe',
     allocatedSize: 'Belegt',
     fileCount: 'Dateien',
+    lastModified: 'Änderungsdatum',
     itemsCount: '{count} Elemente',
     restricted: 'Eingeschränkt',
     calculating: 'Wird berechnet...',
@@ -514,6 +537,9 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     categoryStatsTitle: 'Kategorie-Statistik',
     chartModeBreakdown: 'Aufschlüsselung',
     chartModeCategory: 'Kategorie',
+    fileTypeView: 'Kategorien',
+    fileCategoriesTitle: 'Kategorie-Statistik',
+    dateModified: 'Änderungsdatum',
   },
   zh_tw: {
     appTitle: '文件夾洞察',
@@ -530,6 +556,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     size: '邏輯大小',
     allocatedSize: '實際佔用',
     fileCount: '文件數',
+    lastModified: '最後修改時間',
     itemsCount: '{count} 項',
     restricted: '訪問受限',
     calculating: '計算中...',
@@ -568,9 +595,12 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     categoryImage: '圖片',
     categoryDocument: '文件',
     categoryOther: '其他',
-    categoryStatsTitle: '分類統計',
+    categoryStatsTitle: '分佈統計',
     chartModeBreakdown: '佔比',
     chartModeCategory: '分類',
+    fileTypeView: '分類統計',
+    fileCategoriesTitle: '分類統計',
+    dateModified: '修改時間',
   },
   ru: {
     appTitle: 'Folder Insight',
@@ -587,6 +617,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     size: 'Размер',
     allocatedSize: 'На диске',
     fileCount: 'Файлы',
+    lastModified: 'Дата изменения',
     itemsCount: '{count} элементов',
     restricted: 'Ограничено',
     calculating: 'Вычисление...',
@@ -628,6 +659,9 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     categoryStatsTitle: 'Статистика по категориям',
     chartModeBreakdown: 'Состав',
     chartModeCategory: 'Категории',
+    fileTypeView: 'Категории',
+    fileCategoriesTitle: 'Статистика категорий',
+    dateModified: 'Дата изменения',
   },
   ar: {
     appTitle: 'Folder Insight',
@@ -644,6 +678,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     size: 'الحجم',
     allocatedSize: 'المساحة المستخدمة',
     fileCount: 'الملفات',
+    lastModified: 'تاريخ التعديل',
     itemsCount: '{count} عناصر',
     restricted: 'مقيّد',
     calculating: 'جاري الحساب...',
@@ -685,6 +720,74 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
     categoryStatsTitle: 'إحصاءات الفئات',
     chartModeBreakdown: 'التوزيع',
     chartModeCategory: 'الفئات',
+    fileTypeView: 'الفئات',
+    fileCategoriesTitle: 'إحصاءات الفئات',
+    dateModified: 'تاريخ التعديل',
+  },
+  it: {
+    appTitle: 'Folder Insight',
+    subtitle: 'Visualizza l\'utilizzo dello spazio su disco',
+    treeView: 'Albero',
+    treemapView: 'Treemap',
+    treemapTitle: 'Treemap di distribuzione delle dimensioni dei file',
+    noData: 'Nessun dato',
+    selectFolder: 'Seleziona cartella',
+    totalSize: 'Dimensione totale',
+    totalFiles: 'File totali',
+    rootDirectory: 'Directory principale',
+    name: 'Nome',
+    size: 'Dimensione',
+    allocatedSize: 'Allocato',
+    fileCount: 'File',
+    lastModified: 'Data modifica',
+    itemsCount: '{count} elementi',
+    restricted: 'Limitato',
+    calculating: 'Calcolo in corso...',
+    calculatingInline: ' (Calcolo...)',
+    analyzing: 'Analisi del contenuto della cartella, attendere...',
+    emptyHint: 'Seleziona una cartella per iniziare',
+    openInExplorer: 'Apri in Esplora file',
+    topTitle: 'Analisi',
+    dragHintTitle: 'Trascina una cartella per analizzare',
+    dragHintSubtitle: 'Trascina e rilascia una cartella per iniziare l\'analisi',
+    otherItems: 'Altro ({count})',
+    languageAuto: 'Auto',
+    languageTitle: 'Lingua',
+    sponsor: 'Sponsor',
+    sponsorTitle: 'Sponsor e Supporto',
+    sponsorSubtitle: 'Se trovi utile questo strumento, sentiti libero di supportare lo sviluppatore.',
+    rateTitle: 'Valuta Folder Insight',
+    rateSubtitle: 'Se ti piace questa app, dedica un momento a valutarla sul Microsoft Store. Ci aiuta molto!',
+    rateButton: 'Valuta ora',
+    rateLater: 'Forse più tardi',
+    close: 'Chiudi',
+    goUp: 'Sali',
+    chartView: 'Analisi',
+    metricLogical: 'Logico',
+    metricAllocated: 'Allocato',
+    refreshStats: 'Aggiorna',
+    pauseUpdates: 'Sospendi aggiornamenti',
+    resumeUpdates: 'Riprendi aggiornamenti',
+    categorySystem: 'Sistema',
+    categoryCode: 'Codice',
+    categoryFont: 'Font',
+    categoryBook: 'Libro',
+    categoryArchive: 'Archivio',
+    categoryDatabase: 'Database',
+    categoryDeveloper: 'Sviluppo',
+    categorySoftware: 'Software',
+    categoryGame: 'Gioco',
+    categoryVideo: 'Video',
+    categoryAudio: 'Audio',
+    categoryImage: 'Immagine',
+    categoryDocument: 'Documento',
+    categoryOther: 'Altro',
+    categoryStatsTitle: 'Statistiche per categoria',
+    chartModeBreakdown: 'Analisi',
+    chartModeCategory: 'Categoria',
+    fileTypeView: 'Categorie',
+    fileCategoriesTitle: 'Statistiche categoria',
+    dateModified: 'Data modifica',
   },
 };
 

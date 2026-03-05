@@ -19,7 +19,8 @@ export const processForSunburst = (
   node: FileNode, 
   maxDepth: number = 6, 
   currentDepth: number = 0,
-  rootSize: number = 0
+  rootSize: number = 0,
+  t?: (key: string, params?: Record<string, any>) => string
 ): EChartsNode | null => {
   // Even if size is 0, if it's a directory, it should be displayed
   const rawSize = node.size || 0;
@@ -90,7 +91,7 @@ export const processForSunburst = (
       }
 
       if (shouldShow) {
-        const childNode = processForSunburst(child, maxDepth, currentDepth + 1, rootSize);
+        const childNode = processForSunburst(child, maxDepth, currentDepth + 1, rootSize, t);
         if (childNode) {
           processedChildren.push(childNode);
         }
@@ -103,8 +104,10 @@ export const processForSunburst = (
     if (otherCount > 0) {
       const otherVisualSize = otherSize === 0 ? 4096 : otherSize;
       
+      const otherLabel = t ? t('otherItems', { count: otherCount }) : `其他 (${otherCount}项)`;
+      
       processedChildren.push({
-        name: `其他 (${otherCount}项)`, // This name will be used to filter labels in view
+        name: otherLabel, // This name will be used to filter labels in view
         value: otherVisualSize,
         path: '',
         isDir: true,
@@ -203,7 +206,8 @@ export const processForECharts = (
   maxDepth: number = 6, 
   _thresholdRatio: number = 0.005,
   currentDepth: number = 0,
-  rootSize: number = 0
+  rootSize: number = 0,
+  t?: (key: string, params?: Record<string, any>) => string
 ): EChartsNode | null => {
-    return processForSunburst(node, maxDepth, currentDepth, rootSize);
+    return processForSunburst(node, maxDepth, currentDepth, rootSize, t);
 };

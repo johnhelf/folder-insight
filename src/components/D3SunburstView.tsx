@@ -5,7 +5,7 @@ import { formatSize } from '../utils';
 
 interface D3SunburstViewProps {
   data: EChartsNode | null;
-  t?: (key: string, params?: Record<string, any>) => string;
+  isRTL?: boolean;
   onDrillDown?: (path: string) => void;
   onGoUp?: () => void;
   canGoUp?: boolean;
@@ -14,6 +14,7 @@ interface D3SunburstViewProps {
 
 export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
   data,
+  isRTL = false,
   onDrillDown,
   onGoUp,
   canGoUp,
@@ -56,7 +57,11 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
 
   const getNodeColor = useCallback((d: d3.HierarchyRectangularNode<EChartsNode>) => {
       if (d.depth === 0) return "transparent";
-      if (d.data.name.startsWith("其他") || d.data.name.startsWith("Other")) return "#e0e0e0";
+      
+      // Use isDir=true and path='' as a more reliable indicator of "Other" nodes 
+      // instead of hardcoded strings
+      if (d.data.isDir && d.data.path === '') return "#e0e0e0";
+      
       const ancestor = d.ancestors().find(n => n.depth === 1);
       const key = ancestor ? ancestor.data.name : d.data.name;
       return colorScale(key);
@@ -71,11 +76,11 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
     
     if (width === 0 || height === 0) return;
 
-    // Layout: Chart on left (30%), Labels on right
-    const chartCenterX = width * 0.35;
+    // Layout: Chart on one side, Labels on the other
+    const chartCenterX = isRTL ? width * 0.65 : width * 0.35;
     const chartCenterY = height * 0.5;
     // Radius logic
-    const radius = Math.min(width * 0.6, height * 0.9) / 2;
+    const radius = Math.min(width * 0.55, height * 0.9) / 2;
 
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove(); // Clear all
@@ -150,7 +155,7 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
         event.stopPropagation();
         if (onContextMenu) {
           let path = d.data.path;
-          if (!path || d.data.name.startsWith("其他") || d.data.name.startsWith("Others")) {
+          if (!path) {
              if (d.parent && d.parent.data.path) {
                  path = d.parent.data.path;
              }
@@ -163,7 +168,7 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
 
     // --- Texture for "Other" nodes ---
     const otherNodes = root.descendants().filter(d => 
-      (d.data.name.startsWith("其他") || d.data.name.startsWith("Others")) &&
+      d.data.isDir && d.data.path === '' &&
       (d.x1 - d.x0) > displayThreshold
     );
 
@@ -234,7 +239,7 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
      visibleTargets.sort((a, b) => a.x0 - b.x0);
 
      // Layout Constants
-     const labelAreaX = radius + 40; // Start of label area (relative to center)
+     const labelAreaX = isRTL ? -(radius + 80) : (radius + 80); // Increased label area offset for RTL and general clearance
      const rowHeight = 24;
      const maxRows = Math.floor(height / rowHeight);
      
@@ -271,7 +276,7 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
      itemsToShow.forEach((d, i) => {
          const [cx, cy] = getCentroid(d);
          const ly = startY + i * rowHeight + rowHeight/2;
-         const lx = labelAreaX; // Left edge of text area
+         const lx = labelAreaX; // Edge of text area
 
          // Draw path
          // M cx,cy -> C ... -> L lx, ly
@@ -297,11 +302,12 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
             
          // Draw Text
          const textGroup = labelLayer.append("g")
-            .attr("transform", `translate(${lx + 10}, ${ly})`);
+            .attr("transform", `translate(${isRTL ? lx - 10 : lx + 10}, ${ly})`);
             
          textGroup.append("text")
             .text(d.data.name.length > 25 ? d.data.name.slice(0, 22) + "..." : d.data.name)
             .attr("dy", "0.35em")
+            .attr("text-anchor", isRTL ? "end" : "start")
             .style("font-size", "13px")
             .style("font-weight", "bold")
             .style("fill", "currentColor"); // Use CSS color (slate-600/300)
@@ -309,8 +315,8 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
          textGroup.append("text")
             .text(formatSize(d.value || 0))
             .attr("dy", "0.35em")
-            .attr("x", 200) // Fixed width for name
-            .attr("text-anchor", "end")
+            .attr("x", isRTL ? -110 : 200) // Fixed width for name, increased gap for RTL
+            .attr("text-anchor", isRTL ? "start" : "end")
             .style("font-size", "12px")
             .style("font-family", "monospace")
             .style("fill", "currentColor")
