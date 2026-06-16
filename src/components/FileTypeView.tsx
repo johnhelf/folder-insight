@@ -17,11 +17,16 @@ import {
   ArrowUp,
   ArrowDown,
   Database,
-  Hammer
+  Hammer,
+  Clock,
+  Calendar,
+  CalendarDays,
+  History,
+  Hourglass
 } from 'lucide-react';
 import { FileNode } from '../types';
 import { formatSize, cn } from '../utils';
-import { aggregateCategoryStats, FileCategory } from '../utils/fileTypeStats';
+import { aggregateCategoryStats, aggregateTemporalStats, FileCategory, TimeRange } from '../utils/fileTypeStats';
 
 interface FileTypeViewProps {
   data: FileNode;
@@ -46,15 +51,25 @@ const CATEGORY_CONFIG: Record<FileCategory, { icon: React.ElementType, color: st
   other: { icon: FileQuestion, color: 'text-gray-500 bg-gray-50 dark:bg-gray-900/20', labelKey: 'categoryOther' },
 };
 
+const TIME_CONFIG: Record<TimeRange, { icon: React.ElementType, color: string, labelKey: string }> = {
+  '24h': { icon: Clock, color: 'text-green-500 bg-green-50 dark:bg-green-900/20', labelKey: 'time24h' },
+  '7d': { icon: Calendar, color: 'text-blue-500 bg-blue-50 dark:bg-blue-900/20', labelKey: 'time7d' },
+  '30d': { icon: CalendarDays, color: 'text-purple-500 bg-purple-50 dark:bg-purple-900/20', labelKey: 'time30d' },
+  '1y': { icon: History, color: 'text-orange-500 bg-orange-50 dark:bg-orange-900/20', labelKey: 'time1y' },
+  'older': { icon: Hourglass, color: 'text-gray-500 bg-gray-50 dark:bg-gray-900/20', labelKey: 'timeOlder' },
+};
+
 type SortField = 'name' | 'size' | 'date';
 type SortDirection = 'asc' | 'desc';
+type ViewMode = 'type' | 'time';
 
 /**
  * 文件类型统计视图组件
  * File Type Statistics View Component
  */
 export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, isRTL = false, onContextMenu }) => {
-  const [selectedCategory, setSelectedCategory] = useState<FileCategory | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('type');
+  const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [sortField, setSortField] = useState<SortField>('size');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
 
@@ -62,9 +77,55 @@ export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, isRTL = fal
     return aggregateCategoryStats(data);
   }, [data]);
 
+  const timeStats = useMemo(() => {
+    return aggregateTemporalStats(data);
+  }, [data]);
+
+  const currentStats = viewMode === 'type' ? stats : timeStats;
+  // @ts-ignore - Dynamic access to config
+  const currentConfig = viewMode === 'type' ? CATEGORY_CONFIG : TIME_CONFIG;
+
   const totalSize = useMemo(() => {
-    return Object.values(stats).reduce((acc, curr) => acc + curr.size, 0);
-  }, [stats]);
+    return Object.values(currentStats).reduce((acc: any, curr: any) => acc + curr.size, 0);
+  }, [currentStats]);
+
+  // @ts-ignore
+  const groupData = selectedGroup ? currentStats[selectedGroup] : null;
+  // @ts-ignore
+  const Config = selectedGroup ? currentConfig[selectedGroup] : null;
+
+  // Sort files
+  const sortedFiles = useMemo(() => {
+    if (!groupData) return [];
+    return [...(groupData.files || [])].sort((a, b) => {
+      let comparison = 0;
+      switch (sortField) {
+        case 'name':
+          comparison = (a?.name || '').localeCompare(b?.name || '');
+          break;
+        case 'size':
+          comparison = (a?.size || 0) - (b?.size || 0);
+          break;
+        case 'date':
+          comparison = (a?.last_modified || 0) - (b?.last_modified || 0);
+          break;
+      }
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+  }, [groupData, sortField, sortDirection]);
+
+  // Calculate percentages for bar chart
+  const sortedKeys = useMemo(() => {
+    const keys = Object.keys(currentStats);
+    if (viewMode === 'time') {
+      const timeOrder = ['24h', '7d', '30d', '1y', 'older'];
+      return keys.sort((a, b) => timeOrder.indexOf(a) - timeOrder.indexOf(b));
+    }
+    return keys.sort((a, b) => {
+      // @ts-ignore
+      return currentStats[b].size - currentStats[a].size;
+    });
+  }, [currentStats, viewMode]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -75,29 +136,19 @@ export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, isRTL = fal
     }
   };
 
-  if (selectedCategory) {
-    const categoryData = stats[selectedCategory];
-    const Config = CATEGORY_CONFIG[selectedCategory];
-    const Icon = Config.icon;
+  if (selectedGroup) {
+    if (!groupData || !Config) {
+      return (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-red-500">{t('errorLoadingDetails') || "Error loading details"}</p>
+          <button onClick={() => setSelectedGroup(null)} className="ml-4 text-blue-500 underline">{t('back') || "Back"}</button>
+        </div>
+      );
+    }
 
-    // Sort files
-    const sortedFiles = [...categoryData.files].sort((a, b) => {
-      let comparison = 0;
-      switch (sortField) {
-        case 'name':
-          comparison = a.name.localeCompare(b.name);
-          break;
-        case 'size':
-          comparison = a.size - b.size;
-          break;
-        case 'date':
-          comparison = (a.last_modified || 0) - (b.last_modified || 0);
-          break;
-      }
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
+    const Icon = Config.icon || FileQuestion;
 
-    const SortIcon = ({ field }: { field: SortField }) => {
+    const renderSortIcon = (field: SortField) => {
       if (sortField !== field) return null;
       return sortDirection === 'asc' ? <ArrowUp size={14} className={cn(isRTL ? "mr-1" : "ml-1", "inline")} /> : <ArrowDown size={14} className={cn(isRTL ? "mr-1" : "ml-1", "inline")} />;
     };
@@ -110,18 +161,18 @@ export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, isRTL = fal
         <div className={cn("flex items-center mb-1 shrink-0 gap-2", isRTL && "flex-row-reverse")}>
           <div className={cn("flex items-center gap-2 min-w-0", isRTL && "flex-row-reverse")}>
             <button 
-              onClick={() => setSelectedCategory(null)}
+              onClick={() => setSelectedGroup(null)}
               className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors shrink-0"
             >
               {isRTL ? <ChevronRight size={16} /> : <ArrowLeft size={16} />}
             </button>
-            <div className={cn("p-1 rounded-lg shrink-0", Config.color)}>
+            <div className={cn("p-1 rounded-lg shrink-0", Config?.color || 'bg-gray-100')}>
               <Icon size={18} />
             </div>
-            <h2 className="text-base font-bold truncate">{t(Config.labelKey)}</h2>
+            <h2 className="text-base font-bold truncate">{Config?.labelKey ? t(Config.labelKey) : 'Unknown'}</h2>
           </div>
           <p className={cn("text-sm text-gray-500 dark:text-gray-400 whitespace-nowrap shrink-0", isRTL ? "mr-2" : "ml-2")}>
-            {formatSize(categoryData.size)} · {t('itemsCount', { count: categoryData.count.toLocaleString() })}
+            {formatSize(groupData?.size || 0)} · {t('itemsCount', { count: (groupData?.count || 0).toLocaleString() })}
           </p>
         </div>
 
@@ -134,47 +185,50 @@ export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, isRTL = fal
                     className={cn("px-4 py-2 font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors select-none w-auto", isRTL ? "text-right" : "text-left")}
                     onClick={() => handleSort('name')}
                   >
-                    {t('sortByName')} <SortIcon field="name" />
+                    {t('sortByName')} {renderSortIcon('name')}
                   </th>
                   <th 
                     className={cn("px-4 py-2 font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors select-none w-48", isRTL ? "text-left" : "text-right")}
                     onClick={() => handleSort('date')}
                   >
-                    {t('dateModified')} <SortIcon field="date" />
+                    {t('dateModified')} {renderSortIcon('date')}
                   </th>
                   <th 
                     className={cn("px-4 py-2 font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors select-none w-28", isRTL ? "text-left" : "text-right")}
                     onClick={() => handleSort('size')}
                   >
-                    {t('sortBySize')} <SortIcon field="size" />
+                    {t('sortBySize')} {renderSortIcon('size')}
                   </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {sortedFiles.slice(0, 200).map((file, idx) => (
-                  <tr 
-                    key={`${file.path}-${idx}`} 
-                    className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors cursor-default"
-                    onContextMenu={(e) => onContextMenu && onContextMenu(e, file.path)}
-                  >
-                    <td className="px-4 py-2 overflow-hidden">
-                      <div className={cn("flex items-center gap-2", isRTL && "flex-row-reverse")}>
-                        <File size={16} className="text-gray-400 shrink-0" />
-                        <div className={cn("flex flex-col min-w-0 overflow-hidden", isRTL && "items-end")}>
-                          <span className="truncate font-medium text-gray-700 dark:text-gray-200" title={file.name}>{file.name}</span>
-                          <span className="truncate text-xs text-gray-400" title={file.path}>{file.path}</span>
+                {sortedFiles.slice(0, 200).map((file, idx) => {
+                  if (!file) return null;
+                  return (
+                    <tr 
+                      key={`${file.path}-${idx}`} 
+                      className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors cursor-default"
+                      onContextMenu={(e) => onContextMenu && file.path && onContextMenu(e, file.path)}
+                    >
+                      <td className="px-4 py-2 overflow-hidden">
+                        <div className={cn("flex items-center gap-2", isRTL && "flex-row-reverse")}>
+                          <File size={16} className="text-gray-400 shrink-0" />
+                          <div className={cn("flex flex-col min-w-0 overflow-hidden", isRTL && "items-end")}>
+                            <span className="truncate font-medium text-gray-700 dark:text-gray-200" title={file.name || ''}>{file.name || 'Unknown'}</span>
+                            <span className="truncate text-xs text-gray-400" title={file.path || ''}>{file.path || ''}</span>
+                          </div>
                         </div>
-                      </div>
-                    </td>
-                    <td className={cn("px-4 py-2 text-gray-500 dark:text-gray-400 whitespace-nowrap", isRTL ? "text-left" : "text-right")}>
-                      {file.last_modified ? new Date(file.last_modified > 10000000000 ? file.last_modified : file.last_modified * 1000).toLocaleString() : '-'}
-                    </td>
-                    <td className={cn("px-4 py-2 font-mono text-gray-600 dark:text-gray-300 whitespace-nowrap", isRTL ? "text-left" : "text-right")}>
-                      {formatSize(file.size)}
-                    </td>
-                  </tr>
-                ))}
-                {categoryData.files.length === 0 && (
+                      </td>
+                      <td className={cn("px-4 py-2 text-gray-500 dark:text-gray-400 whitespace-nowrap", isRTL ? "text-left" : "text-right")}>
+                        {file.last_modified ? new Date(file.last_modified > 10000000000 ? file.last_modified : file.last_modified * 1000).toLocaleString() : '-'}
+                      </td>
+                      <td className={cn("px-4 py-2 font-mono text-gray-600 dark:text-gray-300 whitespace-nowrap", isRTL ? "text-left" : "text-right")}>
+                        {formatSize(file.size || 0)}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {(!groupData.files || groupData.files.length === 0) && (
                   <tr>
                     <td colSpan={3} className="px-4 py-8 text-center text-gray-500">
                       {t('noData')}
@@ -189,64 +243,97 @@ export const FileTypeView: React.FC<FileTypeViewProps> = ({ data, t, isRTL = fal
     );
   }
 
-  // Calculate percentages for bar chart
-  const sortedCategories = (Object.keys(stats) as FileCategory[])
-    .sort((a, b) => stats[b].size - stats[a].size);
-
   return (
-    <div className="h-full overflow-auto p-1">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {sortedCategories.map(cat => {
-          const stat = stats[cat];
-          const Config = CATEGORY_CONFIG[cat];
-          const Icon = Config.icon;
-          const percent = totalSize > 0 ? (stat.size / totalSize) * 100 : 0;
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="shrink-0 p-2 flex justify-center gap-2 border-b border-gray-200 dark:border-gray-700 bg-white/50 dark:bg-gray-800/50 backdrop-blur-sm">
+        <div className="flex bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+          <button
+            onClick={() => {
+              setViewMode('type');
+              setSelectedGroup(null);
+            }}
+            className={cn(
+              "px-4 py-1.5 rounded-md text-sm font-medium transition-all",
+              viewMode === 'type' 
+                ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm" 
+                : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+            )}
+          >
+            {t('fileType')}
+          </button>
+          <button
+            onClick={() => {
+              setViewMode('time');
+              setSelectedGroup(null);
+            }}
+            className={cn(
+              "px-4 py-1.5 rounded-md text-sm font-medium transition-all",
+              viewMode === 'time' 
+                ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm" 
+                : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+            )}
+          >
+            {t('fileAge')}
+          </button>
+        </div>
+      </div>
 
-          return (
-            <button
-              key={cat}
-              onClick={() => setSelectedCategory(cat)}
-              className={cn(
-                "flex flex-col p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md hover:border-blue-300 dark:hover:border-blue-700 transition-all group",
-                isRTL ? "text-right" : "text-left"
-              )}
-            >
-              <div className={cn("flex items-center justify-between w-full mb-3", isRTL && "flex-row-reverse")}>
-                <div className={cn("p-3 rounded-xl transition-colors group-hover:scale-110 duration-200", Config.color)}>
-                  <Icon size={24} />
-                </div>
-                <div className={cn("flex items-center text-gray-400 group-hover:text-blue-500 transition-colors", isRTL && "rotate-180")}>
-                  <ChevronRight size={20} />
-                </div>
-              </div>
-              
-              <div className="w-full">
-                <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-1">
-                  {t(Config.labelKey)}
-                </h3>
-                <div className={cn("flex items-baseline gap-2 mb-2", isRTL && "flex-row-reverse")}>
-                  <span className="text-2xl font-bold text-gray-900 dark:text-white">
-                    {formatSize(stat.size)}
-                  </span>
-                  <span className="text-sm text-gray-500 dark:text-gray-400">
-                    {t('itemsCount', { count: stat.count.toLocaleString() })}
-                  </span>
+      <div className="flex-1 overflow-auto p-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-2">
+          {sortedKeys.map(key => {
+            // @ts-ignore
+            const stat = currentStats[key];
+            // @ts-ignore
+            const Config = currentConfig[key];
+            const Icon = Config.icon;
+            const percent = totalSize > 0 ? (stat.size / totalSize) * 100 : 0;
+
+            return (
+              <button
+                key={key}
+                onClick={() => setSelectedGroup(key)}
+                className={cn(
+                  "flex flex-col p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md hover:border-blue-300 dark:hover:border-blue-700 transition-all group",
+                  isRTL ? "text-right" : "text-left"
+                )}
+              >
+                <div className={cn("flex items-center justify-between w-full mb-3", isRTL && "flex-row-reverse")}>
+                  <div className={cn("p-3 rounded-xl transition-colors group-hover:scale-110 duration-200", Config.color)}>
+                    <Icon size={24} />
+                  </div>
+                  <div className={cn("flex items-center text-gray-400 group-hover:text-blue-500 transition-colors", isRTL && "rotate-180")}>
+                    <ChevronRight size={20} />
+                  </div>
                 </div>
                 
-                {/* Progress Bar */}
-                <div className={cn("w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden flex", isRTL && "flex-row-reverse")}>
-                  <div 
-                    className={cn("h-full rounded-full transition-all duration-500 ease-out", Config.color.split(' ')[0])} // use text color class for bar
-                    style={{ width: `${Math.max(percent, 1)}%`, backgroundColor: 'currentColor' }}
-                  />
+                <div className="w-full">
+                  <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-1">
+                    {t(Config.labelKey)}
+                  </h3>
+                  <div className={cn("flex items-baseline gap-2 mb-2", isRTL && "flex-row-reverse")}>
+                    <span className="text-2xl font-bold text-gray-900 dark:text-white">
+                      {formatSize(stat.size)}
+                    </span>
+                    <span className="text-sm text-gray-500 dark:text-gray-400">
+                      {t('itemsCount', { count: stat.count.toLocaleString() })}
+                    </span>
+                  </div>
+                  
+                  {/* Progress Bar */}
+                  <div className={cn("w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden flex", isRTL && "flex-row-reverse")}>
+                    <div 
+                      className={cn("h-full rounded-full transition-all duration-500 ease-out", Config.color.split(' ')[0])} // use text color class for bar
+                      style={{ width: `${Math.max(percent, 1)}%`, backgroundColor: 'currentColor' }}
+                    />
+                  </div>
+                  <div className={cn("mt-1 text-xs text-gray-400", isRTL ? "text-left" : "text-right")}>
+                    {percent.toFixed(1)}%
+                  </div>
                 </div>
-                <div className={cn("mt-1 text-xs text-gray-400", isRTL ? "text-left" : "text-right")}>
-                  {percent.toFixed(1)}%
-                </div>
-              </div>
-            </button>
-          );
-        })}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

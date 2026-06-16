@@ -1,91 +1,25 @@
-# 文件夹洞察 (Folder Insight)
+# Folder Insight
 
-[简体中文](#简体中文) | [English](#english)
-
----
-
-<a name="简体中文"></a>
-## 简体中文
-
-一个基于 **Tauri v2** + **React** + **Rust** 构建的高性能本地文件夹分析工具。它可以帮助你快速扫描磁盘空间，直观地找出占用空间最大的文件夹。
-
-### ✨ 功能特性
-
-- 🚀 **极速扫描**：后端采用 Rust 编写，利用 **Rayon** 并行递归算法，能够充分利用多核 CPU 性能，秒级完成大容量文件夹的扫描与大小统计。
-- 📊 **可视化统计**：
-  - **树形视图**：支持目录树懒加载，清晰展示文件层级结构。
-  - **统计图表**：内置饼图分析，直观展示子文件夹的空间占用比例。
-- ⏱️ **实时反馈**：
-  - 扫描进度实时推送到前端，顶部汇总数据（总大小、文件数）动态更新。
-  - 针对大型目录，提供“计算中...”状态提示，不阻塞用户操作。
-- 🛡️ **稳定鲁棒**：
-  - 内置 Panic 捕获与自愈机制，即使遇到特殊权限或损坏文件，扫描也能持续进行而不卡死。
-  - 路径标准化处理，兼容各种文件系统路径差异。
-- 🖱️ **便捷交互**：
-  - 右键菜单支持“在文件资源管理器中打开”。
-  - 响应式布局，支持窗口自适应调整。
-
-### 🛠️ 技术栈
-
-- **前端**: React 19, TypeScript, Tailwind CSS
-- **后端**: Rust, Tauri v2
-- **并行计算**: Rayon
-- **图标**: Lucide React
-- **图表**: Recharts
-
-### 🚀 快速开始
-
-#### 前置要求
-
-- 安装 [Node.js](https://nodejs.org/)
-- 安装 [Rust 编译环境](https://www.rust-lang.org/tools/install)
-- 安装 [Tauri 依赖](https://tauri.app/v1/guides/getting-started/prerequisites)
-
-#### 运行步骤
-
-1. 克隆项目并进入目录：
-   ```bash
-   git clone <repository-url>
-   cd folder-insight
-   ```
-
-2. 安装前端依赖：
-   ```bash
-   npm install
-   ```
-
-3. 启动开发服务器：
-   ```bash
-   npm run tauri dev
-   ```
-
-4. 构建生产版本：
-   ```bash
-   npm run tauri build
-   ```
-   安装 x86 目标平台：
-   ```bash
-   rustup target add i686-pc-windows-msvc
-   ```
-
-   构建 x86 版本：
-   ```bash
-   npx tauri build --target i686-pc-windows-msvc
-   ```
+[简体中文](./README_zh-CN.md)
 
 ---
 
-<a name="english"></a>
-## English
+A high-performance local folder analysis tool built with **Tauri v2** + **React** + **Rust**. It helps you quickly scan disk space, intuitively find the largest folders, and provides AI-powered analysis and cleanup suggestions.
 
-A high-performance local folder analysis tool built with **Tauri v2** + **React** + **Rust**. It helps you quickly scan disk space and intuitively find the largest folders.
+## ✨ Features
 
-### ✨ Features
-
-- 🚀 **Blazing Fast Scanning**: The backend is written in Rust, utilizing the **Rayon** parallel recursive algorithm to fully leverage multi-core CPU performance, completing scans and size statistics of large folders in seconds.
-- 📊 **Visual Statistics**:
+- 🚀 **Blazing Fast Scanning**: The backend is written in Rust, utilizing **Multi-threaded** parallel algorithms to fully leverage multi-core CPU performance, completing scans and size statistics of large folders in seconds.
+- 📊 **Multi-dimensional Visualization**:
   - **Tree View**: Supports lazy loading of directory trees, clearly displaying the file hierarchy.
-  - **Statistical Charts**: Built-in pie chart analysis to intuitively show the space usage proportion of subfolders.
+  - **Statistical Charts**: Built-in Pie Chart, **Sunburst Chart**, and **Treemap** for multi-dimensional space usage display.
+- 🤖 **AI Insights**:
+  - Deep analysis of scan results based on local LLM or cloud API.
+  - Provides intelligent cleanup suggestions and file organization plans to help you manage disk space more efficiently.
+- 👯 **Duplicate Detection**:
+  - Quickly scan and identify duplicate files (based on hash or filename/size).
+  - Provides convenient cleanup options to free up redundant space.
+- 📑 **File Type Statistics**:
+  - Categorized statistics by file extension, giving you a clear view of which file types take up the most space.
 - ⏱️ **Real-time Feedback**:
   - Scanning progress is pushed to the frontend in real-time, with top summary data (total size, file count) updating dynamically.
   - For large directories, a "Calculating..." status hint is provided without blocking user operations.
@@ -93,26 +27,44 @@ A high-performance local folder analysis tool built with **Tauri v2** + **React*
   - Built-in Panic capture and self-healing mechanism ensure scanning continues even when encountering special permissions or corrupted files.
   - Path normalization handles various file system path differences.
 - 🖱️ **Convenient Interaction**:
+  - Supports **Drag and Drop** folders for quick analysis.
   - Context menu supports "Open in File Explorer".
   - Responsive layout with window auto-adaptation.
+  - **Internationalization**: Built-in English and Chinese support to meet different user needs.
 
-### 🛠️ Tech Stack
+## 🛠️ Tech Stack
 
-- **Frontend**: React 19, TypeScript, Tailwind CSS
+- **Frontend**: React 19, TypeScript, Tailwind CSS, Framer Motion
 - **Backend**: Rust, Tauri v2
-- **Parallel Computing**: Rayon
+- **Core Libraries**: 
+  - `walkdir`: Efficient file system traversal
+  - `sysinfo`: System information retrieval
+  - `sha2`: File hash calculation
+  - `regex`: Regular expression matching
+- **Charts**: Recharts, D3.js, ECharts
 - **Icons**: Lucide React
-- **Charts**: Recharts
 
-### 🚀 Quick Start
+## ☕ Sponsor Project
 
-#### Prerequisites
+If you find this project helpful, or if you like my work, please consider buying me a coffee! Your support is my motivation to continue maintaining and improving the project.
+
+### Alipay
+
+<img src="public/sponsor-qr.png" alt="Alipay QR Code" width="200" />
+
+### Buy Me a Coffee
+
+[![Buy Me a Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://buymeacoffee.com/johnhelf)
+
+## 🚀 Quick Start
+
+### Prerequisites
 
 - Install [Node.js](https://nodejs.org/)
 - Install [Rust Environment](https://www.rust-lang.org/tools/install)
 - Install [Tauri Prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites)
 
-#### Steps
+### Steps
 
 1. Clone the repository and enter the directory:
    ```bash
@@ -130,6 +82,11 @@ A high-performance local folder analysis tool built with **Tauri v2** + **React*
    npm run tauri dev
    ```
 
-### 📝 License
+4. Build for production:
+   ```bash
+   npm run tauri build
+   ```
+
+## 📝 License
 
 MIT License

@@ -10,8 +10,9 @@ import {
   Loader2, 
   ShieldAlert
 } from "lucide-react";
-import { formatSize, cn } from "../utils";
+import { formatSize, cn, getTranslatedNodeName } from "../utils";
 import { FileNode, DiskStats } from "../types";
+import { normalizePathForMatch } from "../utils/treeUtils";
 
 
 
@@ -24,6 +25,7 @@ interface TreeViewProps {
   onContextMenu: (e: React.MouseEvent, path: string) => void;
   t: (key: string, params?: Record<string, string>) => string;
   isRTL?: boolean;
+  availableDisks?: DiskStats[];
 }
 
 interface FlatNode {
@@ -39,6 +41,8 @@ interface RowData {
   onContextMenu: (e: React.MouseEvent, path: string) => void;
   t: (key: string, params?: Record<string, string>) => string;
   isRTL?: boolean;
+  availableDisksMap?: Map<string, {total: number, available: number}>;
+  rootPath: string;
 }
 
 const flattenTree = (
@@ -61,11 +65,14 @@ interface RowProps extends RowData {
   style: CSSProperties;
 }
 
-const Row = ({ index, style, flatData, expandedPaths, loadingPaths, onToggleExpand, onContextMenu, t, isRTL }: RowProps) => {
+const Row = ({ index, style, flatData, expandedPaths, loadingPaths, onToggleExpand, onContextMenu, t, isRTL, availableDisksMap, rootPath }: RowProps) => {
   const { node, depth } = flatData[index];
   const isExpanded = expandedPaths.has(node.path);
   const isLoading = loadingPaths.has(node.path);
   const indent = depth * 1.5;
+
+  const showFreeSpace = rootPath === "ALL_DISKS" || rootPath.startsWith("PHYSICAL_DISK:");
+  const diskInfo = showFreeSpace && availableDisksMap ? availableDisksMap.get(normalizePathForMatch(node.path)) : undefined;
 
   return (
     <div style={style} className={cn("flex items-center hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-sm border-b border-gray-100 dark:border-gray-800/50 select-none", isRTL && "flex-row-reverse")}>
@@ -93,8 +100,13 @@ const Row = ({ index, style, flatData, expandedPaths, loadingPaths, onToggleExpa
           )}
         </span>
         <span className="truncate font-medium text-gray-700 dark:text-gray-200">
-          {node.name}
+          {getTranslatedNodeName(node.name, t)}
         </span>
+        {diskInfo && (
+            <span className={cn("text-xs text-gray-500 dark:text-gray-400 font-normal", isRTL ? "mr-2" : "ml-2")}>
+               {formatSize(diskInfo.available)} / {formatSize(diskInfo.total)}
+            </span>
+        )}
         {node.is_restricted && (
             <span className={cn("inline-flex items-center gap-1 text-[10px] bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 px-1.5 py-0.5 rounded border border-red-100 dark:border-red-800/50", isRTL ? "mr-2" : "ml-2")}>
               <ShieldAlert size={10} />
@@ -134,11 +146,21 @@ export const TreeView: React.FC<TreeViewProps> = ({
   onToggleExpand, 
   onContextMenu, 
   t,
-  isRTL = false
+  isRTL = false,
+  availableDisks
 }) => {
   const flatData = useMemo(() => {
     return flattenTree(data, expandedPaths);
   }, [data, expandedPaths]);
+
+  const availableDisksMap = useMemo(() => {
+    if (!availableDisks) return undefined;
+    const map = new Map<string, {total: number, available: number}>();
+    availableDisks.forEach(d => {
+        map.set(normalizePathForMatch(d.mount_point), {total: d.total, available: d.available});
+    });
+    return map;
+  }, [availableDisks]);
 
   const itemData = useMemo(() => ({
     flatData,
@@ -147,11 +169,16 @@ export const TreeView: React.FC<TreeViewProps> = ({
     onToggleExpand,
     onContextMenu,
     t,
-    isRTL
-  }), [flatData, expandedPaths, loadingPaths, onToggleExpand, onContextMenu, t, isRTL]);
+    isRTL,
+    availableDisksMap,
+    rootPath: data.path
+  }), [flatData, expandedPaths, loadingPaths, onToggleExpand, onContextMenu, t, isRTL, availableDisksMap, data.path]);
 
   return (
-    <div className={cn("h-full flex flex-col bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800", isRTL && "border-r-0 border-l")}>
+    <div 
+      className={cn("h-full flex flex-col bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800", isRTL && "border-r-0 border-l")}
+      onContextMenu={(e) => e.preventDefault()}
+    >
       {/* Header Area */}
       <div className="shrink-0 border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50">
         <div className={cn("p-3 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center", isRTL && "flex-row-reverse")}>

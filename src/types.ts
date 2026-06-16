@@ -38,3 +38,17 @@ export interface DiskStats {
   mount_point: string;
   name: string;
 }
+
+export interface PhysicalDisk {
+  number: number;
+  name: string;
+  partitions: string | null;
+}
+
+export interface ProgressUpdate {
+  scanned_count: number;
+  scanned_size: number;
+  current_path: string;
+  disk_name?: string;
+  total_size?: number;
+}

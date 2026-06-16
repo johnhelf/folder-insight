@@ -5,6 +5,7 @@ export interface EChartsNode {
   value: number;
   path: string;
   isDir: boolean;
+  isRestricted?: boolean;
   children?: EChartsNode[];
   itemStyle?: {
     color?: string;
@@ -52,6 +53,7 @@ export const processForSunburst = (
     value: visualSize,
     path: node.path,
     isDir: node.is_dir,
+    isRestricted: node.is_restricted,
   };
 
   if (currentDepth >= maxDepth) {
@@ -161,6 +163,7 @@ export const processForTreemap = (
     value: visualSize,
     path: node.path,
     isDir: node.is_dir,
+    isRestricted: node.is_restricted,
   };
 
   if (currentDepth >= maxDepth) {

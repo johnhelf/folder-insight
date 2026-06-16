@@ -38,3 +38,18 @@ export const isWindows = () => {
   const userAgent = window.navigator.userAgent;
   return /Win/i.test(platform) || /Win/i.test(userAgent);
 };
+
+export const getTranslatedNodeName = (name: string, t: (key: string, params?: Record<string, string>) => string): string => {
+  if (name === "ALL_DISKS") {
+    return t('allDisks');
+  }
+  if (name.startsWith("PHYSICAL_DISK_")) {
+    const num = name.replace("PHYSICAL_DISK_", "");
+    return t('physicalDiskPrefix', { disk: num });
+  }
+  if (name.startsWith("PHYSICAL_DISK:")) {
+    const num = name.replace("PHYSICAL_DISK:", "");
+    return t('physicalDiskPrefix', { disk: num });
+  }
+  return name;
+};

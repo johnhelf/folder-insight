@@ -290,8 +290,8 @@ export const D3SunburstView: React.FC<D3SunburstViewProps> = ({
             .attr("d", `M${cx},${cy} C${c1x},${c1y} ${c2x},${c2y} ${lx},${ly}`)
             .attr("fill", "none")
             .attr("stroke", getNodeColor(d))
-            .attr("stroke-width", 1)
-            .attr("opacity", 0.6);
+            .attr("stroke-width", 2)
+            .attr("opacity", 0.8);
             
          // Draw Circle at target
          labelLayer.append("circle")

@@ -121,3 +121,67 @@ export function aggregateCategoryStats(node: FileNode): Record<FileCategory, Cat
 
   return stats;
 }
+
+export type TimeRange = '24h' | '7d' | '30d' | '1y' | 'older';
+
+export interface TemporalStat {
+  range: TimeRange;
+  labelKey: string;
+  size: number;
+  count: number;
+  files: FileItem[];
+}
+
+/**
+ * 递归遍历文件树，按修改时间聚合统计数据
+ * Recursively traverse file tree and aggregate statistics by modification time
+ */
+export function aggregateTemporalStats(node: FileNode): Record<TimeRange, TemporalStat> {
+  const stats: Record<TimeRange, TemporalStat> = {
+    '24h': { range: '24h', labelKey: 'time24h', size: 0, count: 0, files: [] },
+    '7d': { range: '7d', labelKey: 'time7d', size: 0, count: 0, files: [] },
+    '30d': { range: '30d', labelKey: 'time30d', size: 0, count: 0, files: [] },
+    '1y': { range: '1y', labelKey: 'time1y', size: 0, count: 0, files: [] },
+    'older': { range: 'older', labelKey: 'timeOlder', size: 0, count: 0, files: [] },
+  };
+
+  const now = Date.now() / 1000; // Current time in seconds
+  const day = 24 * 3600;
+  const week = 7 * day;
+  const month = 30 * day;
+  const year = 365 * day;
+
+  function traverse(n: FileNode) {
+    if (!n.is_dir) {
+      const size = n.size || 0;
+      const modified = n.modified || 0;
+      const age = now - modified;
+
+      let range: TimeRange = 'older';
+      if (age < day) range = '24h';
+      else if (age < week) range = '7d';
+      else if (age < month) range = '30d';
+      else if (age < year) range = '1y';
+
+      stats[range].size += size;
+      stats[range].count += 1;
+      stats[range].files.push({ 
+        name: n.name, 
+        path: n.path, 
+        size,
+        last_modified: modified || undefined
+      });
+    } else if (n.children) {
+      n.children.forEach(traverse);
+    }
+  }
+
+  traverse(node);
+  
+  // Sort files by size desc
+  Object.values(stats).forEach(stat => {
+    stat.files.sort((a, b) => b.size - a.size);
+  });
+
+  return stats;
+}
