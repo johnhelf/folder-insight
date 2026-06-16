@@ -8,9 +8,22 @@ use std::io::{Read, Seek, SeekFrom};
 use xxhash_rust::xxh3::Xxh3;
 use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 use crate::models::{StructureUpdate, BatchStructureUpdate, SizeUpdate, BatchSizeUpdate};
 use crate::state::SizeCache;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// 创建一个不会显示控制台窗口的 Command（Windows 专用）
+#[cfg(target_os = "windows")]
+fn create_hidden_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
 
 /// 获取 Windows 下的磁盘分区映射 (Drive Letter -> Disk Number)
 #[cfg(target_os = "windows")]
@@ -18,8 +31,7 @@ pub fn get_disk_partition_map() -> HashMap<String, u32> {
     let mut map = HashMap::new();
     // Execute PowerShell command to get partition mapping
     // Get-Partition | Select-Object DriveLetter, DiskNumber | ConvertTo-Json
-    // Use creation flag to avoid popping up a window if possible (though Command usually doesn't show window unless explicit)
-    let output = std::process::Command::new("powershell")
+    let output = create_hidden_command("powershell")
         .args(&["-NoProfile", "-Command", "Get-Partition | Select-Object DriveLetter, DiskNumber | ConvertTo-Json"])
         .output();
 
@@ -315,7 +327,7 @@ pub fn get_disk_number(path: &Path) -> Option<u32> {
         }
 
         if !drive_letter.is_empty() {
-                 let output = Command::new("powershell")
+                 let output = create_hidden_command("powershell")
                     .args(&["-NoProfile", "-Command", &format!("Get-Partition -DriveLetter {} | Select-Object -ExpandProperty DiskNumber", drive_letter)])
                     .output()
                     .ok()?;

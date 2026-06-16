@@ -11,6 +11,8 @@ use walkdir::WalkDir;
 use rayon::prelude::*;
 use std::sync::atomic::AtomicUsize;
 use regex::Regex;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 use crate::models::{
     AIReportResult, DiskStats, PhysicalDisk, DuplicateGroup, DuplicateScanOptions, DuplicateScanProgress,
@@ -19,6 +21,17 @@ use crate::models::{
 use crate::state::AppState;
 use crate::utils::{compute_file_hash, normalize_path_string, parse_size_str, try_mark_in_progress, format_size, is_ignored_path};
 use crate::scanner::{build_file_tree, run_background_scan, MAX_INITIAL_DEPTH};
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// 创建一个不会显示控制台窗口的 Command（Windows 专用）
+#[cfg(target_os = "windows")]
+fn create_hidden_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
 
 /// 在资源管理器中打开指定路径
 #[tauri::command]
@@ -29,13 +42,13 @@ pub async fn open_in_explorer(path: String) -> Result<(), String> {
         let path_buf = PathBuf::from(&path);
 
         if path_buf.is_dir() {
-            Command::new("explorer")
+            create_hidden_command("explorer")
                 .arg(&path)
                 .spawn()
                 .map_err(|e| e.to_string())?;
         } else {
             // Use /select,path to select the file in Explorer
-            Command::new("explorer")
+            create_hidden_command("explorer")
                 .arg(format!("/select,{}", path))
                 .spawn()
                 .map_err(|e| e.to_string())?;
@@ -89,7 +102,7 @@ pub fn get_physical_disks() -> Result<Vec<PhysicalDisk>, String> {
             }
             $result | ConvertTo-Json
         "#;
-        let output = Command::new("powershell")
+        let output = create_hidden_command("powershell")
             .args(&["-NoProfile", "-Command", script])
             .output();
 
