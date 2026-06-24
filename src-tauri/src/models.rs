@@ -44,6 +44,7 @@ pub struct BatchStructureUpdate {
 pub struct ProgressUpdate {
     pub scanned_count: u64,
     pub scanned_size: u64,
+    pub scanned_allocated_size: u64,
     pub current_path: String,
     pub disk_name: Option<String>,
     pub total_size: Option<u64>,

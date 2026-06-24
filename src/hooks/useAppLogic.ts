@@ -540,7 +540,7 @@ export function useAppLogic() {
       if (node && node.is_dir && !node.children) {
         setLoadingPaths(prev => new Set(prev).add(path));
         try {
-          const result = await invoke<FileNode>("analyze_directory", { path });
+          const result = await invoke<FileNode>("expand_directory", { path });
 
           setData(prev => {
             if (!prev) return null;
@@ -627,7 +627,7 @@ export function useAppLogic() {
     if (node.is_dir && !node.children) {
       setLoading(true);
       try {
-        const result = await invoke<FileNode>("analyze_directory", { path });
+        const result = await invoke<FileNode>("expand_directory", { path });
         
         setData(prev => {
           if (!prev) return null;

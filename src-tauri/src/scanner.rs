@@ -85,7 +85,9 @@ pub fn run_background_scan(
     let mut pending_structures: Vec<StructureUpdate> = Vec::new();
     let mut scanned_count = 0u64;
     let mut scanned_size = 0u64;
+    let mut scanned_allocated_size = 0u64;
     let mut last_progress_emit = Instant::now();
+    let mut seen_hardlinks: HashSet<u64> = HashSet::new();
 
     // Try to determine total size for progress reporting
     let mut total_size = total_size_override;
@@ -130,6 +132,7 @@ pub fn run_background_scan(
                 let _ = app_handle.emit("scan-progress", ProgressUpdate {
                     scanned_count,
                     scanned_size,
+                    scanned_allocated_size,
                     current_path: entry_result.as_ref().ok().map(|e| e.path().to_string_lossy().to_string()).unwrap_or_default(),
                     disk_name: disk_name.clone(),
                     total_size,
@@ -153,10 +156,26 @@ pub fn run_background_scan(
                     // 尝试恢复数据：即使遍历失败，也尝试获取文件/目录本身的大小
                     // Try to recover: even if traversal fails, try to get size of file/dir itself
                     if let Ok(meta) = fs::symlink_metadata(path) {
-                        let size = meta.len();
-                        scanned_size += size;
-                        let allocated = get_allocated_size(path, size);
+                        let mut size = meta.len();
+                        let mut allocated = crate::utils::get_allocated_size(path, size);
                         let is_dir = meta.is_dir();
+
+                        if !is_dir && cfg!(windows) && size > 0 {
+                            #[cfg(target_os = "windows")]
+                            {
+                                if let Some((file_id, links)) = crate::utils::get_file_id_and_links(path) {
+                                    if links > 1 {
+                                        if !seen_hardlinks.insert(file_id) {
+                                            size = 0;
+                                            allocated = 0;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        scanned_size += size;
+                        scanned_allocated_size += allocated;
 
                         if is_dir {
                             // It's a directory we can't enter. Mark it restricted.
@@ -226,7 +245,28 @@ pub fn run_background_scan(
             }
         };
 
-        scanned_size += meta.len();
+        let mut size = meta.len();
+        let mut allocated = crate::utils::get_allocated_size(path, size);
+
+        if !meta.is_dir() {
+            // Windows 全局硬链接去重 (基于底层 File ID)
+            if cfg!(windows) && size > 0 {
+                #[cfg(target_os = "windows")]
+                {
+                    if let Some((file_id, links)) = crate::utils::get_file_id_and_links(path) {
+                        if links > 1 {
+                            if !seen_hardlinks.insert(file_id) {
+                                size = 0;
+                                allocated = 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        scanned_size += size;
+        scanned_allocated_size += allocated;
 
         if meta.is_dir() {
             let _depth = entry.depth();
@@ -246,8 +286,6 @@ pub fn run_background_scan(
             
             // Add directory's OWN size (metadata) to parents
             // 将目录自身的大小（元数据）添加到父目录统计中
-            let size = meta.len();
-            let allocated = get_allocated_size(path, size);
             
             let mut current = path.parent();
             while let Some(p) = current {
@@ -269,8 +307,7 @@ pub fn run_background_scan(
             }
         } else {
             // 是文件
-            let size = meta.len();
-            let allocated = get_allocated_size(path, size);
+            // (Size and allocated are already calculated above)
 
             // 向上更新所有父目录的大小
             let mut current = path.parent();

@@ -87,6 +87,11 @@ If you find this project helpful, or if you like my work, please consider buying
    npm run tauri build
    ```
 
+   Build for 32-bit (x86) Windows:
+   ```bash
+   npx tauri build --target i686-pc-windows-msvc
+   ```
+
 ## 📝 License
 
 MIT License

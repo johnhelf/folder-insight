@@ -508,6 +508,21 @@ pub async fn analyze_directory(
 }
 
 #[tauri::command]
+pub async fn expand_directory(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<FileNode, String> {
+    let root_path = normalize_path_string(&path);
+    let path_obj = Path::new(&root_path);
+    
+    // 仅读取一层子目录，不启动后台扫描
+    let root_node = build_file_tree(path_obj, 0, 1, &state)
+        .ok_or_else(|| "Failed to access directory".to_string())?;
+
+    Ok(root_node)
+}
+
+#[tauri::command]
 pub fn cancel_scan(state: tauri::State<'_, AppState>) {
     let mut token_guard = state.current_scan_cancel_token.lock().unwrap();
     if let Some(token) = token_guard.as_ref() {

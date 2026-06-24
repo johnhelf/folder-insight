@@ -48,6 +48,7 @@ export interface PhysicalDisk {
 export interface ProgressUpdate {
   scanned_count: number;
   scanned_size: number;
+  scanned_allocated_size?: number;
   current_path: string;
   disk_name?: string;
   total_size?: number;

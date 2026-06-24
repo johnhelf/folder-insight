@@ -15,11 +15,13 @@ export function ScanProgress({ t, scanProgress, scanStartTime, isRTL, totalSize 
   const [elapsedMs, setElapsedMs] = useState(0);
   const [smoothEtaMs, setSmoothEtaMs] = useState<number | null>(null);
   const [lastSpeeds, setLastSpeeds] = useState<number[]>([]);
+  const [prevSnapshot, setPrevSnapshot] = useState({ size: 0, time: 0 });
 
   useEffect(() => {
     if (!scanStartTime) {
         setElapsedMs(0);
         setLastSpeeds([]);
+        setPrevSnapshot({ size: 0, time: 0 });
         return;
     }
     const interval = setInterval(() => {
@@ -41,51 +43,51 @@ export function ScanProgress({ t, scanProgress, scanStartTime, isRTL, totalSize 
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
-  const currentScannedSize = scanProgress?.scanned_size || 0;
+  const currentScannedSize = scanProgress?.scanned_allocated_size || scanProgress?.scanned_size || 0;
   
-  // ETA 平滑处理 - 使用更稳健的算法减少波动
+  // ETA 算法优化：使用真实的瞬时速度滑动窗口
   useEffect(() => {
-    // 只有在获得总大小、已扫描部分内容且经过一定时间 (3s) 后才开始计算
-    // 增加初始等待时间，因为初始扫描速度通常非常不稳定
-    if (elapsedMs > 3000 && currentScannedSize > 0 && totalSize && totalSize > currentScannedSize) {
-      const currentSpeed = currentScannedSize / (elapsedMs / 1000);
+    if (elapsedMs > 2000 && currentScannedSize > 0) {
+      const deltaSize = currentScannedSize - prevSnapshot.size;
+      const deltaTime = (elapsedMs - prevSnapshot.time) / 1000;
       
-      // 记录最近的速度样本，增加窗口以获得更好的平滑度
-      setLastSpeeds(prev => {
-        const next = [...prev, currentSpeed].slice(-100); // 增加样本数量到 100
-        return next;
-      });
+      if (deltaTime >= 1.0) { // 每秒采样一次瞬时速度
+        const instantSpeed = deltaSize / deltaTime;
+        setPrevSnapshot({ size: currentScannedSize, time: elapsedMs });
+        
+        setLastSpeeds(prev => {
+          // 保留最近 15 秒的瞬时速度
+          const next = [...prev, instantSpeed].slice(-15);
+          return next;
+        });
+      }
 
-      // 计算平滑速度：使用修剪平均值
-      if (lastSpeeds.length > 5) {
-        // 移除最高和最低 20% 的样本以减少极端波动的影响
+      if (lastSpeeds.length > 3) {
+        // 去除最高和最低极值，计算平均瞬时速度
         const sortedSpeeds = [...lastSpeeds].sort((a, b) => a - b);
         const trimCount = Math.floor(sortedSpeeds.length * 0.2);
         const trimmedSpeeds = sortedSpeeds.slice(trimCount, sortedSpeeds.length - trimCount);
         
         if (trimmedSpeeds.length > 0) {
-          // 计算修剪后的平均速度
           const avgSpeed = trimmedSpeeds.reduce((a, b) => a + b, 0) / trimmedSpeeds.length;
           
-          const remaining = totalSize - currentScannedSize;
-          // 限制最小速度，防止计算出天文数字般的 ETA
-          const effectiveSpeed = Math.max(avgSpeed, 1024 * 1024); // 至少 1MB/s
+          // 如果 scannedSize 超过了物理可用空间（因硬链接/压缩），预估剩余少量时间
+          let remaining = 0;
+          if (totalSize && totalSize > currentScannedSize) {
+              remaining = totalSize - currentScannedSize;
+          } else {
+              remaining = currentScannedSize * 0.02; // 溢出后保守估计剩余 2%
+          }
+
+          // 限制最小速度 10MB/s，防止 ETA 突然跳到几个小时
+          const effectiveSpeed = Math.max(avgSpeed, 10 * 1024 * 1024); 
           const newEta = (remaining / effectiveSpeed) * 1000;
           
           setSmoothEtaMs(prev => {
             if (prev === null) return newEta;
-            
-            // 极低平滑系数 (0.03) 以确保显示非常稳定但又能适应变化
-            const alpha = 0.03;
+            // 阻尼系数，让时间平滑递减而不剧烈跳动
+            const alpha = 0.1;
             let smoothed = prev * (1 - alpha) + newEta * alpha;
-            
-            // 滞后逻辑：如果新旧 ETA 差异小于 1 秒，则保持旧值，避免视觉跳动
-            const diff = Math.abs(smoothed - prev);
-            if (diff < 1000) {
-                return prev;
-            }
-            
-            // 确保 ETA 不会比剩余时间更短（如果进度没变）
             return smoothed;
           });
         }
@@ -93,8 +95,9 @@ export function ScanProgress({ t, scanProgress, scanStartTime, isRTL, totalSize 
     } else if (!scanProgress) {
       setSmoothEtaMs(null);
       setLastSpeeds([]);
+      setPrevSnapshot({ size: 0, time: 0 });
     }
-  }, [elapsedMs, currentScannedSize, totalSize, scanProgress]);
+  }, [elapsedMs, currentScannedSize, totalSize, scanProgress, prevSnapshot]);
 
   const speedBytesPerSec = elapsedMs > 0 ? (currentScannedSize / (elapsedMs / 1000)) : 0;
   

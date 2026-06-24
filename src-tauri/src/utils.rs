@@ -115,12 +115,120 @@ pub fn normalize_path_string(path: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
-pub fn get_allocated_size(_path: &Path, logical_size: u64) -> u64 {
-    const CLUSTER_SIZE: u64 = 4096;
+pub fn get_allocated_size(path: &Path, logical_size: u64) -> u64 {
+    use std::os::windows::ffi::OsStrExt;
+
     if logical_size == 0 {
         return 0;
     }
-    logical_size.div_ceil(CLUSTER_SIZE) * CLUSTER_SIZE
+
+    let mut wide_path: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide_path.push(0);
+
+    let mut high: u32 = 0;
+    extern "system" {
+        fn GetCompressedFileSizeW(lpFileName: *const u16, lpFileSizeHigh: *mut u32) -> u32;
+        fn GetLastError() -> u32;
+    }
+
+    let low = unsafe { GetCompressedFileSizeW(wide_path.as_ptr(), &mut high) };
+    
+    let mut actual_size = logical_size;
+    if low == 0xFFFFFFFF {
+        let err = unsafe { GetLastError() };
+        if err == 0 {
+            actual_size = ((high as u64) << 32) | (low as u64);
+        }
+    } else {
+        actual_size = ((high as u64) << 32) | (low as u64);
+    }
+
+    if actual_size == 0 {
+        return 0;
+    }
+
+    const CLUSTER_SIZE: u64 = 4096;
+    actual_size.div_ceil(CLUSTER_SIZE) * CLUSTER_SIZE
+}
+
+#[cfg(target_os = "windows")]
+pub fn get_file_id_and_links(path: &Path) -> Option<(u64, u32)> {
+    use std::os::windows::ffi::OsStrExt;
+    
+    let mut wide_path: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide_path.push(0);
+
+    type HANDLE = *mut std::ffi::c_void;
+    const INVALID_HANDLE_VALUE: HANDLE = -1isize as HANDLE;
+    const FILE_SHARE_READ: u32 = 0x00000001;
+    const FILE_SHARE_WRITE: u32 = 0x00000002;
+    const FILE_SHARE_DELETE: u32 = 0x00000004;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
+
+    #[repr(C)]
+    struct FILETIME {
+        dw_low_date_time: u32,
+        dw_high_date_time: u32,
+    }
+
+    #[repr(C)]
+    struct BY_HANDLE_FILE_INFORMATION {
+        dw_file_attributes: u32,
+        ft_creation_time: FILETIME,
+        ft_last_access_time: FILETIME,
+        ft_last_write_time: FILETIME,
+        dw_volume_serial_number: u32,
+        n_file_size_high: u32,
+        n_file_size_low: u32,
+        n_number_of_links: u32,
+        n_file_index_high: u32,
+        n_file_index_low: u32,
+    }
+
+    extern "system" {
+        fn CreateFileW(
+            lpFileName: *const u16,
+            dwDesiredAccess: u32,
+            dwShareMode: u32,
+            lpSecurityAttributes: *mut std::ffi::c_void,
+            dwCreationDisposition: u32,
+            dwFlagsAndAttributes: u32,
+            hTemplateFile: HANDLE,
+        ) -> HANDLE;
+        fn GetFileInformationByHandle(
+            hFile: HANDLE,
+            lpFileInformation: *mut BY_HANDLE_FILE_INFORMATION,
+        ) -> i32;
+        fn CloseHandle(hObject: HANDLE) -> i32;
+    }
+
+    unsafe {
+        // dwDesiredAccess = 0 means query attributes without reading the file
+        let handle = CreateFileW(
+            wide_path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        );
+
+        if handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+
+        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        let res = GetFileInformationByHandle(handle, &mut info);
+        CloseHandle(handle);
+
+        if res != 0 {
+            let file_id = ((info.n_file_index_high as u64) << 32) | (info.n_file_index_low as u64);
+            return Some((file_id, info.n_number_of_links));
+        }
+        None
+    }
 }
 
 #[cfg(not(target_os = "windows"))]

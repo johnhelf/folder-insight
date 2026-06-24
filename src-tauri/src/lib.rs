@@ -36,6 +36,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::analyze_directory,
+            commands::expand_directory,
             commands::open_in_explorer,
             commands::get_all_disk_stats,
             commands::get_physical_disks,
