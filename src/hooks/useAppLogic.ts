@@ -406,7 +406,11 @@ export function useAppLogic() {
       
       setData(sortTreeRecursive(updatedResult));
       setCurrentViewPath(updatedResult.path);
-      setExpandedPaths(new Set([result.path as string]));
+      // 同一路径重新扫描时不收起已展开的目录，保留用户浏览上下文；切换目录才重置
+      const sameRoot =
+        dataRef.current !== null &&
+        normalizePathForMatch(dataRef.current.path) === normalizePathForMatch(updatedResult.path);
+      setExpandedPaths(prev => (sameRoot && prev.size > 0 ? prev : new Set([updatedResult.path])));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setIsBackgroundScanning(false);
