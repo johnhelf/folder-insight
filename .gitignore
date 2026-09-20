@@ -26,3 +26,6 @@ dist-ssr
 
 publish/
 .trae
+
+# 大模型通用规则（本地私有，不进仓库）
+/AGENT.md
