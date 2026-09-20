@@ -117,12 +117,12 @@ export const SearchModal: React.FC<SearchModalProps> = ({ isOpen, onClose, onOpe
           
           {!query && (
              <div className="p-8 text-center text-gray-400 text-sm">
-               <p className="mb-2">Advanced Search Syntax:</p>
+               <p className="mb-2">{t('advancedSearchSyntax')}</p>
                <ul className="space-y-1">
-                 <li><code>*.rs</code> - Regex/Glob pattern</li>
-                 <li><code>size:&gt;100MB</code> - Size greater than 100MB</li>
-                 <li><code>size:&lt;10KB</code> - Size less than 10KB</li>
-                 <li><code>ext:png</code> - Extension filter</li>
+                 <li><code>*.rs</code> {t('searchHintRegex')}</li>
+                 <li><code>size:&gt;100MB</code> {t('searchHintSizeGt')}</li>
+                 <li><code>size:&lt;10KB</code> {t('searchHintSizeLt')}</li>
+                 <li><code>ext:png</code> {t('searchHintExt')}</li>
                </ul>
              </div>
           )}

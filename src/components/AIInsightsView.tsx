@@ -286,7 +286,7 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
       await writeTextFile(filePath, htmlContent);
     } catch (err) {
       console.error('Failed to export:', err);
-      setError('Export failed: ' + err);
+      setError(t('exportFailed') + err);
     }
   };
 
@@ -536,7 +536,7 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
                 </div>
                 <div className="p-4 bg-indigo-50/50 dark:bg-indigo-900/10 rounded-xl border border-indigo-100/50 dark:border-indigo-800/50">
                   <p className="text-[10px] text-indigo-600/70 dark:text-indigo-400/70 font-bold uppercase tracking-widest mb-1">{t('aiTokenEstimate')}</p>
-                  <p className="text-xl font-bold text-indigo-700 dark:text-indigo-300">~{estimatedTokens} <span className="text-xs font-normal opacity-60 ml-1">tokens</span></p>
+                  <p className="text-xl font-bold text-indigo-700 dark:text-indigo-300">~{estimatedTokens} <span className="text-xs font-normal opacity-60 ml-1">{t('tokensLabel')}</span></p>
                 </div>
               </div>
 

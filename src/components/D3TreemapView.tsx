@@ -5,6 +5,7 @@ import { formatSize } from '../utils';
 
 interface D3TreemapViewProps {
   data: EChartsNode | null;
+  t: (key: string) => string;
   isRTL?: boolean;
   onDrillDown?: (path: string) => void;
   onContextMenu?: (e: React.MouseEvent | MouseEvent, path: string) => void;
@@ -12,6 +13,7 @@ interface D3TreemapViewProps {
 
 export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
   data,
+  t,
   isRTL = false,
   onDrillDown,
   onContextMenu
@@ -317,7 +319,7 @@ export const D3TreemapView: React.FC<D3TreemapViewProps> = ({
             <div className="flex flex-col gap-1">
               <div className="font-bold text-amber-400 text-sm truncate border-b border-slate-700 pb-1 mb-1">{hoverNode.data.name}</div>
               <div className="flex justify-between items-center text-gray-300">
-                <span>Size:</span>
+                <span>{t('sizeLabel')}:</span>
                 <span className="font-mono text-white">{formatSize(hoverNode.value || 0)}</span>
               </div>
               {hoverNode.depth > 0 && (

@@ -69,7 +69,7 @@ export const SponsorModal: React.FC<SponsorModalProps> = ({ isOpen, onClose, t, 
                 className="flex items-center justify-center gap-2 w-full py-2 bg-[#FFDD00] hover:bg-[#ffed4a] text-black rounded-xl font-bold text-sm transition-colors"
               >
                 <img src="https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg" alt="BMC" className="w-4 h-4" />
-                <span>Buy Me a Coffee</span>
+                <span>{t('buyMeACoffee')}</span>
               </a>
               
               <p className="text-[10px] text-gray-400 text-center">

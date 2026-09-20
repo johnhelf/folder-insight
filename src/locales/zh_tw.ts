@@ -168,4 +168,13 @@ export default {
   rescanCurrent: 'Rescan Current Folder',
   nonTauriError: 'Please run this app inside Tauri to use file scanning features.',
   fullScanStartError: 'Failed to start full disk scan',
+  tokensLabel: 'tokens',
+  exportFailed: 'Export failed: ',
+  sizeLabel: 'Size',
+  advancedSearchSyntax: 'Advanced Search Syntax:',
+  searchHintRegex: '- Regex/Glob pattern',
+  searchHintSizeGt: '- Size greater than 100MB',
+  searchHintSizeLt: '- Size less than 10KB',
+  searchHintExt: '- Extension filter',
+  buyMeACoffee: 'Buy Me a Coffee',
 };
