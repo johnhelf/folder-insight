@@ -24,15 +24,17 @@ pub async fn get_large_items_report(
         *token_guard = Some(Arc::clone(&cancel_token));
     }
 
-    let mut large_items = Vec::new();
-    let mut dir_sizes: HashMap<String, u64> = HashMap::new();
-    let mut dir_children: HashMap<String, Vec<String>> = HashMap::new();
-    let mut scanned_count = 0;
+    // 同步全量 WalkDir 遍历移入 spawn_blocking，避免阻塞异步运行时线程
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut large_items = Vec::new();
+        let mut dir_sizes: HashMap<String, u64> = HashMap::new();
+        let mut dir_children: HashMap<String, Vec<String>> = HashMap::new();
+        let mut scanned_count = 0;
 
-    for root_path in root_paths {
-        if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err("Scan cancelled".to_string());
-        }
+        for root_path in root_paths {
+            if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err::<Vec<LargeFileInfo>, String>("Scan cancelled".to_string());
+            }
 
         let root_path_buf = PathBuf::from(&root_path);
         // We do a more comprehensive walk but still limit depth for AI context
@@ -129,5 +131,10 @@ pub async fn get_large_items_report(
     large_items.sort_by(|a, b| b.size.cmp(&a.size));
     large_items.truncate(50);
 
-    Ok(large_items)
+        Ok::<Vec<LargeFileInfo>, String>(large_items)
+    })
+    .await
+    .map_err(|e| format!("Large items scan task failed: {}", e))?;
+
+    result
 }
