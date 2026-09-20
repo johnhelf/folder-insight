@@ -377,7 +377,7 @@ export function useAppLogic() {
 
   const analyzePath = useCallback(async (path: string) => {
     if (!isTauri()) {
-      setError("Please run this app inside Tauri to use file scanning features.");
+      setError(t('nonTauriError'));
       return;
     }
     try {
@@ -469,7 +469,7 @@ export function useAppLogic() {
 
   const analyzeFullDisk = useCallback(async () => {
     if (!isTauri()) {
-      setError("Please run this app inside Tauri to use file scanning features.");
+      setError(t('nonTauriError'));
       return;
     }
 
@@ -502,7 +502,7 @@ export function useAppLogic() {
 
     } catch (err) {
       console.error(err);
-      setError(typeof err === "string" ? err : "Failed to start full disk scan");
+      setError(typeof err === "string" ? err : t('fullScanStartError'));
       setIsBackgroundScanning(false);
     } finally {
       setLoading(false);
@@ -519,7 +519,7 @@ export function useAppLogic() {
 
   const handleSelectFolder = async () => {
     if (!isTauri()) {
-      setError("Please run this app inside Tauri to use file scanning features.");
+      setError(t('nonTauriError'));
       return;
     }
 

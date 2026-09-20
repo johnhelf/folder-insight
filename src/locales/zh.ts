@@ -141,6 +141,8 @@ const zh = {
   selectDrive: '选择驱动器',
   refreshDrives: '刷新驱动器列表',
   rescanCurrent: '重新扫描当前文件夹',
+  nonTauriError: '请使用 Tauri 环境运行应用以使用文件扫描功能。',
+  fullScanStartError: '启动全盘扫描失败',
   freeSpace: '剩余空间',
   duplicatesView: '重复文件',
   errorLoadingDetails: '加载详情失败',

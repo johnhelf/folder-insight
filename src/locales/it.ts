@@ -165,6 +165,8 @@ const it = {
   findDuplicatesDesc: 'Find identical duplicate files',
   smartAnalysis: 'Get cleanup suggestions with AI',
   rescanCurrent: 'Rescan Current Folder',
+  nonTauriError: 'Please run this app inside Tauri to use file scanning features.',
+  fullScanStartError: 'Failed to start full disk scan',
 };
 
 export default it;

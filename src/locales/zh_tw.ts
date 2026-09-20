@@ -166,4 +166,6 @@ export default {
   findDuplicatesDesc: '查找完全相同的重複檔案',
   smartAnalysis: '透過 AI 獲得清理建議',
   rescanCurrent: 'Rescan Current Folder',
+  nonTauriError: 'Please run this app inside Tauri to use file scanning features.',
+  fullScanStartError: 'Failed to start full disk scan',
 };

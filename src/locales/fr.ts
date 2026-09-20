@@ -168,4 +168,6 @@ export default {
   rateLater: 'Maybe Later',
   smartAnalysis: 'Get cleanup suggestions with AI',
   rescanCurrent: 'Rescan Current Folder',
+  nonTauriError: 'Please run this app inside Tauri to use file scanning features.',
+  fullScanStartError: 'Failed to start full disk scan',
 };

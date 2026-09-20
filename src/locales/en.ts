@@ -130,6 +130,8 @@ const en = {
   selectDrive: 'Select Drive',
   refreshDrives: 'Refresh Drives',
   rescanCurrent: 'Rescan Current Folder',
+  nonTauriError: 'Please run this app inside Tauri to use file scanning features.',
+  fullScanStartError: 'Failed to start full disk scan',
   freeSpace: 'Free Space',
   duplicatesView: 'Duplicates',
   errorLoadingDetails: 'Error loading details',
