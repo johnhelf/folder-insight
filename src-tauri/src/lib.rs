@@ -35,19 +35,19 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            commands::analyze_directory,
-            commands::expand_directory,
-            commands::open_in_explorer,
-            commands::get_all_disk_stats,
-            commands::get_physical_disks,
-            commands::get_disk_stats,
-            commands::find_duplicates,
-            commands::get_large_items_report,
-            commands::get_ai_insights,
-            commands::preview_ai_prompt,
-            commands::search_files,
-            commands::cancel_scan,
-            commands::cancel_ai_scan
+            commands::scan::analyze_directory,
+            commands::scan::expand_directory,
+            commands::scan::cancel_scan,
+            commands::disks::open_in_explorer,
+            commands::disks::get_all_disk_stats,
+            commands::disks::get_physical_disks,
+            commands::disks::get_disk_stats,
+            commands::duplicates::find_duplicates,
+            commands::large::get_large_items_report,
+            commands::ai::get_ai_insights,
+            commands::ai::preview_ai_prompt,
+            commands::ai::cancel_ai_scan,
+            commands::search::search_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

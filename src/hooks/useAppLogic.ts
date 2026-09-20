@@ -25,6 +25,7 @@ import {
   applyBatchUpdates,
   getNodeMetricSize
 } from "../utils/treeUtils";
+import { applyPendingToFullTree, drainPendingUpdates } from "../utils/scanMerging";
 
 
 export function useAppLogic() {
@@ -117,34 +118,6 @@ export function useAppLogic() {
       });
     }, 200);
   }, []);
-
-  // --- 抽取：读取并清空待处理更新队列（避免四处重复拷贝+清空）---
-  // --- Extracted helper: drain pending update queues ---
-  const drainPendingUpdates = () => {
-    const sUpdates = new Map(pendingStructureUpdates.current);
-    const zUpdates = new Map(pendingUpdates.current);
-    pendingStructureUpdates.current.clear();
-    pendingUpdates.current.clear();
-    return { sUpdates, zUpdates };
-  };
-
-  // 抽取：将待处理更新应用到整棵现有树
-  // Extracted helper: apply pending updates onto an existing full tree.
-  const applyPendingToFullTree = (root: FileNode): FileNode => {
-    const { sUpdates, zUpdates } = drainPendingUpdates();
-    if (sUpdates.size === 0 && zUpdates.size === 0) return root;
-    const appliedPaths = new Set<string>();
-    const updatesByParent = buildUpdatesByParent(sUpdates);
-    return applyBatchUpdates(
-      root,
-      sUpdates,
-      zUpdates,
-      getAffectedPaths([sUpdates, zUpdates]),
-      true,
-      appliedPaths,
-      updatesByParent
-    );
-  };
 
   // --- Effects ---
 
@@ -402,7 +375,7 @@ export function useAppLogic() {
       setDiskStats(stats);
       
       // 将后台扫描期间到达的待处理更新合并到初始结果
-      let updatedResult = applyPendingToFullTree(result);
+      let updatedResult = applyPendingToFullTree(result, pendingStructureUpdates, pendingUpdates);
       
       setData(sortTreeRecursive(updatedResult));
       setCurrentViewPath(updatedResult.path);
@@ -499,7 +472,7 @@ export function useAppLogic() {
 
       const result = await invoke<FileNode>("analyze_directory", { path: "ALL_DISKS" });
       
-      const updatedResult = applyPendingToFullTree(result);
+      const updatedResult = applyPendingToFullTree(result, pendingStructureUpdates, pendingUpdates);
       
       setData(sortTreeRecursive(updatedResult));
       setCurrentViewPath(updatedResult.path);
@@ -577,7 +550,7 @@ export function useAppLogic() {
             
             let updatedNode = result;
 
-            const { sUpdates, zUpdates } = drainPendingUpdates();
+            const { sUpdates, zUpdates } = drainPendingUpdates(pendingStructureUpdates, pendingUpdates);
 
             if (sUpdates.size > 0 || zUpdates.size > 0) {
                  const appliedPaths = new Set<string>();
@@ -656,7 +629,7 @@ export function useAppLogic() {
           if (!prev) return null;
           let updatedNode = result;
 
-          const { sUpdates, zUpdates } = drainPendingUpdates();
+          const { sUpdates, zUpdates } = drainPendingUpdates(pendingStructureUpdates, pendingUpdates);
 
           if (sUpdates.size > 0 || zUpdates.size > 0) {
                const appliedPaths = new Set<string>();
