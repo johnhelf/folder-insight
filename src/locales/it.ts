@@ -176,8 +176,22 @@ const it = {
   searchHintSizeLt: '- Size less than 10KB',
   searchHintExt: '- Extension filter',
   buyMeACoffee: 'Buy Me a Coffee',
-  aiEmptyResponse: 'L''IA ha restituito una risposta vuota o un formato non valido.',
+  aiEmptyResponse: 'L\'IA ha restituito una risposta vuota o un formato non valido.',
   configureApiKeyFirst: 'Configura prima la tua chiave API.',
+  editKey: 'Edit',
+  clear: 'Clear',
+  duplicateIdleTitle: 'No scan yet',
+  duplicateIdleHint: 'Adjust the minimum file size and start scanning to reclaim wasted space.',
+  duplicateScanFailed: 'Duplicate scan failed',
+  retry: 'Retry',
+  searchFailed: 'Search failed',
+  noResults: 'No results found',
+  searchHistory: 'Search history',
+  clearHistory: 'Clear',
+  searchResultCount: '{count} results',
+  searchResultLimitHint: 'showing first 1000',
+  aiPrivacyNote: 'Privacy: AI analysis only collects local file metadata (paths, sizes, timestamps) — file contents are never uploaded. Avoid using absolutely sensitive paths in analysis; results are best-effort AI suggestions.',
+  highRisk: 'High Risk',
 };
 
 export default it;

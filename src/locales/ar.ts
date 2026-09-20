@@ -178,6 +178,20 @@ const ar = {
   buyMeACoffee: 'Buy Me a Coffee',
   aiEmptyResponse: 'أعاد الذكاء الاصطناعي استجابة فارغة أو تنسيقاً غير صالح.',
   configureApiKeyFirst: 'يرجى تكوين مفتاح API أولاً.',
+  editKey: 'Edit',
+  clear: 'Clear',
+  duplicateIdleTitle: 'No scan yet',
+  duplicateIdleHint: 'Adjust the minimum file size and start scanning to reclaim wasted space.',
+  duplicateScanFailed: 'Duplicate scan failed',
+  retry: 'Retry',
+  searchFailed: 'Search failed',
+  noResults: 'No results found',
+  searchHistory: 'Search history',
+  clearHistory: 'Clear',
+  searchResultCount: '{count} results',
+  searchResultLimitHint: 'showing first 1000',
+  aiPrivacyNote: 'Privacy: AI analysis only collects local file metadata (paths, sizes, timestamps) — file contents are never uploaded. Avoid using absolutely sensitive paths in analysis; results are best-effort AI suggestions.',
+  highRisk: 'High Risk',
 };
 
 export default ar;

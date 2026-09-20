@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { cn } from "./utils";
 import { SponsorModal } from "./components/SponsorModal";
 import { RateModal } from "./components/RateModal";
@@ -11,6 +12,7 @@ import { ContextMenu } from "./components/ContextMenu";
 import { EmptyState } from "./components/EmptyState";
 import { ScanProgress } from "./components/ScanProgress";
 import { AboutModal } from './components/AboutModal';
+import { SearchModal } from './components/SearchModal';
 
 /**
  * 应用主组件：展示目录树与统计信息，并监听后端实时大小更新。
@@ -47,6 +49,8 @@ function App() {
     setSizeMetric,
     locale,
     currentViewPath,
+    isSearchOpen,
+    setIsSearchOpen,
     isReceivingUpdates,
     isScanning,
     fileListRef,
@@ -179,6 +183,7 @@ function App() {
         setView={setView}
         isToolsMenuOpen={isToolsMenuOpen}
         setIsToolsMenuOpen={setIsToolsMenuOpen}
+        onOpenSearch={() => setIsSearchOpen(true)}
         languageMode={languageMode}
         setLanguageMode={setLanguageMode}
         systemLocale={systemLocale}
@@ -268,6 +273,16 @@ function App() {
         t={t}
         onRateClick={() => setIsRateModalOpen(true)}
       />
+      {/* 全球搜索弹窗 / Global Search Modal */}
+      <SearchModal
+        isOpen={isSearchOpen}
+        onClose={() => setIsSearchOpen(false)}
+        onOpenPath={handleChartDrillDown}
+        onOpenInExplorer={(path) => invoke('open_in_explorer', { path })}
+        t={t}
+        currentPath={currentViewPath}
+      />
+
       {/* 评分弹窗 / Rate Modal */}
       <RateModal 
         isOpen={isRateModalOpen}

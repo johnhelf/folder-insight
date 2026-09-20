@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Loader2, FolderOpen, AlertCircle, FileText } from "lucide-react";
 import { formatSize } from "../utils";
+import { UnifiedState } from "./UnifiedState";
+import { exportTabularData } from "../utils/exportUtils";
 
 interface DuplicateGroup {
     hash: string;
@@ -30,12 +32,14 @@ export function DuplicatesView({ t, targetDirs, onOpenInExplorer }: DuplicatesVi
     const [progress, setProgress] = useState<DuplicateScanProgress | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [minSize, setMinSize] = useState<number>(1024 * 1024); // 1MB default
+    const [hasScanned, setHasScanned] = useState(false);
 
     const startScan = async () => {
         setIsScanning(true);
         setError(null);
         setDuplicates([]);
         setProgress(null);
+        setHasScanned(true);
 
         let unlisten: (() => void) | undefined;
 
@@ -84,6 +88,26 @@ export function DuplicatesView({ t, targetDirs, onOpenInExplorer }: DuplicatesVi
 
     const totalWastedSpace = duplicates.reduce((acc, group) => acc + group.size * (group.files.length - 1), 0);
 
+    // 扁平化为"每个文件一行"便于 CSV/JSON 导出
+    const flattenRows = () => {
+        const headers = [t('group'), t('fileSize'), t('path')];
+        const rows: Array<Array<string | number>> = [];
+        duplicates.forEach((group, idx) => {
+            group.files.forEach((file) => rows.push([idx + 1, group.size, file]));
+        });
+        return { headers, rows };
+    };
+
+    const handleExport = async (format: 'csv' | 'json') => {
+        try {
+            const { headers, rows } = flattenRows();
+            await exportTabularData(format, 'duplicates-report', headers, rows);
+        } catch (err) {
+            console.error('Failed to export duplicates:', err);
+            setError(typeof err === "string" ? err : "Failed to export");
+        }
+    };
+
     return (
         <div className="h-full flex flex-col p-4">
             <div className="flex items-center gap-4 mb-6 bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
@@ -121,18 +145,26 @@ export function DuplicatesView({ t, targetDirs, onOpenInExplorer }: DuplicatesVi
                 )}
 
                 {!isScanning && duplicates.length > 0 && (
-                    <div className="mt-5 ml-auto flex items-center gap-2 text-orange-600 dark:text-orange-400 font-medium">
-                        <AlertCircle size={18} />
-                        <span>{t('wastedSpace')}: {formatSize(totalWastedSpace)}</span>
+                    <div className="mt-5 ml-auto flex items-center gap-2">
+                        <button
+                            onClick={() => handleExport('csv')}
+                            className="px-3 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                        >
+                            CSV
+                        </button>
+                        <button
+                            onClick={() => handleExport('json')}
+                            className="px-3 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                        >
+                            JSON
+                        </button>
+                        <div className="flex items-center gap-2 text-orange-600 dark:text-orange-400 font-medium">
+                            <AlertCircle size={18} />
+                            <span>{t('wastedSpace')}: {formatSize(totalWastedSpace)}</span>
+                        </div>
                     </div>
                 )}
             </div>
-
-            {error && (
-                <div className="bg-red-50 text-red-700 p-3 rounded-lg mb-4 text-sm border border-red-200">
-                    {error}
-                </div>
-            )}
 
             {isScanning && progress && (
                 <div className="flex-1 flex flex-col items-center justify-center text-gray-500">
@@ -153,11 +185,24 @@ export function DuplicatesView({ t, targetDirs, onOpenInExplorer }: DuplicatesVi
                 </div>
             )}
 
-            {!isScanning && duplicates.length === 0 && (
-                <div className="flex-1 flex flex-col items-center justify-center text-gray-400">
-                    <FileText size={64} className="opacity-20 mb-4" />
-                    <p>{t('noDuplicates')}</p>
-                </div>
+            {!isScanning && error && (
+                <UnifiedState
+                    variant="error"
+                    title={t('duplicateScanFailed')}
+                    hint={error}
+                    actionLabel={t('retry')}
+                    onAction={startScan}
+                />
+            )}
+
+            {!isScanning && !error && duplicates.length === 0 && (
+                <UnifiedState
+                    variant={hasScanned ? "empty" : "idle"}
+                    title={hasScanned ? t('noDuplicates') : t('duplicateIdleTitle')}
+                    hint={hasScanned ? undefined : t('duplicateIdleHint')}
+                    actionLabel={!hasScanned ? t('startScan') : undefined}
+                    onAction={startScan}
+                />
             )}
 
             {!isScanning && duplicates.length > 0 && (

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    name: Static checks
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain (with rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Rust format check
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      # Tauri v2 在 Linux 上编译需要系统库；此处仅为 cargo check 提供最小依赖
+      - name: Install Linux system deps for Tauri
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Rust check
+        working-directory: src-tauri
+        run: cargo check
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      # 校验所有语言文件键一致（en 为基准）；无新增/缺失键方可通过
+      - name: i18n keys must be consistent
+        run: |
+          node update_locales.cjs
+          git diff --exit-code -- src/locales/

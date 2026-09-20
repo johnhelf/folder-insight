@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { HardDrive, Heart, TreeDeciduous, BarChart3, PieChart, Wrench, Files, Sparkles, ChevronDown, FolderOpen, MonitorPlay, RefreshCw, Languages, Info, Square } from "lucide-react";
+import { HardDrive, Heart, TreeDeciduous, BarChart3, PieChart, Wrench, Files, Sparkles, ChevronDown, FolderOpen, MonitorPlay, RefreshCw, Languages, Info, Square, Search } from "lucide-react";
 import { cn, formatSize } from "../utils";
 import { getLocaleNativeName } from "../i18n";
 import { version } from "../../package.json";
@@ -21,6 +21,7 @@ interface AppHeaderProps {
   setView: (view: any) => void;
   isToolsMenuOpen: boolean;
   setIsToolsMenuOpen: (v: boolean | ((v: boolean) => boolean)) => void;
+  onOpenSearch: () => void;
   languageMode: string;
   setLanguageMode: (mode: any) => void;
   systemLocale: any;
@@ -45,6 +46,7 @@ export function AppHeader({
   setView,
   isToolsMenuOpen,
   setIsToolsMenuOpen,
+  onOpenSearch,
   languageMode,
   setLanguageMode,
   systemLocale,
@@ -273,6 +275,15 @@ export function AppHeader({
           </div>
 
           <div className="h-6 w-px bg-gray-200 dark:bg-gray-700 mx-1 hidden sm:block" />
+
+          {/* 1.5 Search */}
+          <button
+            onClick={onOpenSearch}
+            className="p-2 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 transition-colors shrink-0"
+            title={t('search')}
+          >
+            <Search size={18} className="shrink-0" />
+          </button>
 
           {/* 2. View Mode */}
           {data && (

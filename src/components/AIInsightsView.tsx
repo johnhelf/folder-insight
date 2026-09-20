@@ -6,6 +6,8 @@ import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { Loader2, Settings, Sparkles, AlertCircle, File as FileIcon, Folder as FolderIcon, ExternalLink, Download } from 'lucide-react';
 import { formatSize } from '../utils';
 import { DiskStats } from '../types';
+import { loadApiKey, saveApiKey, maskKey } from '../utils/secureStorage';
+import { exportTabularData } from '../utils/exportUtils';
 
 interface LargeFileInfo {
   path: string;
@@ -44,7 +46,8 @@ interface AIInsightsViewProps {
 }
 
 export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpenExplorer, t, locale }) => {
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('ai_api_key') || '');
+  const [apiKey, setApiKey] = useState(() => loadApiKey());
+  const [editingKey, setEditingKey] = useState(false);
   const [apiUrl, setApiUrl] = useState(() => localStorage.getItem('ai_api_url') || 'https://api.openai.com/v1/chat/completions');
   const [model, setModel] = useState(() => localStorage.getItem('ai_model') || 'gpt-4o-mini');
   const [aiThreshold, setAiThreshold] = useState(() => parseInt(localStorage.getItem('ai_threshold') || '500', 10));
@@ -99,7 +102,7 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
   }, [locale, showConfirmation, largeFiles]);
 
   useEffect(() => {
-    localStorage.setItem('ai_api_key', apiKey);
+    saveApiKey(apiKey);
     localStorage.setItem('ai_api_url', apiUrl);
     localStorage.setItem('ai_model', model);
     localStorage.setItem('ai_threshold', aiThreshold.toString());
@@ -225,6 +228,11 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
     return action;
   };
 
+  const isHighRisk = (action: string) => {
+    const act = action.toLowerCase();
+    return act.includes('delete') || act.includes('remove');
+  };
+
   const handleAcceptDisclaimer = () => {
     localStorage.setItem('ai_disclaimer_accepted', 'true');
     setHasAcceptedDisclaimer(true);
@@ -238,10 +246,18 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
     }
   };
 
-  const handleExport = async () => {
+  const handleExport = async (format: 'html' | 'csv' | 'json') => {
     if (insights.length === 0) return;
-    
+
     try {
+      // CSV / JSON 复用统一导出工具
+      if (format !== 'html') {
+        const headers = [t('path'), t('action'), t('reason')];
+        const rows = insights.map(i => [i.path, i.action, i.reason]);
+        await exportTabularData(format, 'ai-insights-report', headers, rows);
+        return;
+      }
+
       const filePath = await save({
         filters: [{
           name: 'HTML Document',
@@ -396,7 +412,21 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
                 <span className="hidden sm:inline">{t('rawData')}</span>
               </button>
               <button
-                onClick={handleExport}
+                onClick={() => handleExport('csv')}
+                className="px-3 py-2 text-sm font-medium text-green-700 dark:text-green-400 border border-green-600/40 rounded-lg hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors"
+                title="Export CSV"
+              >
+                CSV
+              </button>
+              <button
+                onClick={() => handleExport('json')}
+                className="px-3 py-2 text-sm font-medium text-green-700 dark:text-green-400 border border-green-600/40 rounded-lg hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors"
+                title="Export JSON"
+              >
+                JSON
+              </button>
+              <button
+                onClick={() => handleExport('html')}
                 className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors"
                 title={t('exportResults')}
               >
@@ -453,13 +483,37 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">{t('apiKey')}</label>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder="sk-..."
-              />
+              {apiKey && !editingKey ? (
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 px-3 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md text-sm text-gray-500 dark:text-gray-400 select-all overflow-hidden text-ellipsis whitespace-nowrap">
+                    {maskKey(apiKey)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setEditingKey(true)}
+                    className="px-3 py-2 text-sm text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800/50 rounded-md hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors"
+                  >
+                    {t('editKey')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setApiKey('')}
+                    title={t('clear')}
+                    className="px-3 py-2 text-sm text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/50 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                  >
+                    {t('clear')}
+                  </button>
+                </div>
+              ) : (
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  onBlur={() => setEditingKey(false)}
+                  className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="sk-..."
+                />
+              )}
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">{t('aiAnalysisThreshold')} (MB)</label>
@@ -475,6 +529,9 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
               />
             </div>
           </div>
+          <p className="mt-3 text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+            {t('aiPrivacyNote')}
+          </p>
         </div>
       )}
 
@@ -627,6 +684,11 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
                         <div className="w-1.5 h-1.5 rounded-full bg-current opacity-70"></div>
                         {getTranslatedAction(insight.action)}
                       </div>
+                      {isHighRisk(insight.action) && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-red-600/10 text-red-600 dark:text-red-400 border border-red-400/40">
+                          ⚠ {t('highRisk')}
+                        </span>
+                      )}
                       <button
                         onClick={() => onOpenExplorer(insight.path)}
                         className="p-1.5 text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-all"
