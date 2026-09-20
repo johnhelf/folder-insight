@@ -167,4 +167,5 @@ export default {
   rateButton: 'Rate Now',
   rateLater: 'Maybe Later',
   smartAnalysis: 'Get cleanup suggestions with AI',
+  rescanCurrent: 'Rescan Current Folder',
 };

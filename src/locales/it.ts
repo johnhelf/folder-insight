@@ -164,6 +164,7 @@ const it = {
   rateLater: 'Maybe Later',
   findDuplicatesDesc: 'Find identical duplicate files',
   smartAnalysis: 'Get cleanup suggestions with AI',
+  rescanCurrent: 'Rescan Current Folder',
 };
 
 export default it;

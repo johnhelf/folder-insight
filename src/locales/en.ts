@@ -129,6 +129,7 @@ const en = {
   search: 'Search',
   selectDrive: 'Select Drive',
   refreshDrives: 'Refresh Drives',
+  rescanCurrent: 'Rescan Current Folder',
   freeSpace: 'Free Space',
   duplicatesView: 'Duplicates',
   errorLoadingDetails: 'Error loading details',

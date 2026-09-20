@@ -332,6 +332,19 @@ pub fn run_background_scan(
 
         // 节流：每 200ms 发送一次更新
         if last_emit.elapsed() > Duration::from_millis(200) {
+            // C2 修复：先增量写入尺寸缓存（仅本次待发送的目录），
+            // 使扫描中途用户展开目录可以通过 build_file_tree 拿到真实大小，
+            // 避免展开时读取到空缓存而显示 "计算中"。
+            // Incremental cache write so mid-scan expand returns real sizes.
+            {
+                let mut cache_lock = cache.lock().unwrap();
+                for path in &pending_updates {
+                    if let Some(stats) = dir_stats.get(path) {
+                        cache_lock.insert(path.clone(), *stats);
+                    }
+                }
+            }
+
             // 先发送结构更新，确保前端有节点可以接收大小更新
             // Send structure updates first so frontend has nodes to receive size updates
             emit_batch_structure_updates(&app_handle, &mut pending_structures);

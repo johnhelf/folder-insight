@@ -140,6 +140,7 @@ const zh = {
   search: '搜索',
   selectDrive: '选择驱动器',
   refreshDrives: '刷新驱动器列表',
+  rescanCurrent: '重新扫描当前文件夹',
   freeSpace: '剩余空间',
   duplicatesView: '重复文件',
   errorLoadingDetails: '加载详情失败',

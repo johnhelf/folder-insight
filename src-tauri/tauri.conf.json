@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Folder Insight",
-  "version": "1.1.5",
-  "identifier": "com.xiaoyu.folder-insight",
+  "version": "1.1.6",
+  "identifier": "F6EF9EF4.FolderInsight",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1421",
@@ -28,7 +28,7 @@
     "active": true,
     "category": "Utility",
     "targets": "all",
-    "publisher": "CN=晓宇映辰",
+    "publisher": "CN=FACD2862-DCBB-4BD8-B465-F52AD4275F33",
     "shortDescription": "High-performance folder analysis tool.",
     "longDescription": "Folder Insight is a lightweight and powerful disk space analysis tool designed to answer \"where has my disk space gone?\" It scans selected folders in seconds and presents file size distribution through intuitive tree views and percentage charts. Find space-consuming files instantly without checking properties manually. Running entirely locally, it ensures your data privacy, making it an essential assistant for disk cleanup and space management.",
     "windows": {

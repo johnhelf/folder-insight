@@ -56,16 +56,20 @@ export function useAppLogic() {
   const updateTimeoutRef = useRef<number | null>(null);
   const isUpdateScheduled = useRef(false);
   const needsSort = useRef(false);
-  const isRefreshing = useRef(false); 
   const hasCheckedModalRef = useRef(false);
   const fileListRef = useRef<HTMLDivElement | null>(null);
   const [isBackgroundScanning, setIsBackgroundScanning] = useState(false);
   const isScanning = loading || scanProgress !== null || isReceivingUpdates || isBackgroundScanning;
   const isScanningRef = useRef(isScanning);
+  const dataRef = useRef<FileNode | null>(null);
 
   useEffect(() => {
     isScanningRef.current = isScanning;
   }, [isScanning]);
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
 
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
@@ -102,10 +106,6 @@ export function useAppLogic() {
           return null;
         }
 
-        if (isRefreshing.current) {
-          return prev;
-        }
-
         console.log(`Processing batch updates: ${sUpdates.size} structure, ${zUpdates.size} size`);
         
         const affected = getAffectedPaths([sUpdates, zUpdates]);
@@ -117,6 +117,34 @@ export function useAppLogic() {
       });
     }, 200);
   }, []);
+
+  // --- 抽取：读取并清空待处理更新队列（避免四处重复拷贝+清空）---
+  // --- Extracted helper: drain pending update queues ---
+  const drainPendingUpdates = () => {
+    const sUpdates = new Map(pendingStructureUpdates.current);
+    const zUpdates = new Map(pendingUpdates.current);
+    pendingStructureUpdates.current.clear();
+    pendingUpdates.current.clear();
+    return { sUpdates, zUpdates };
+  };
+
+  // 抽取：将待处理更新应用到整棵现有树
+  // Extracted helper: apply pending updates onto an existing full tree.
+  const applyPendingToFullTree = (root: FileNode): FileNode => {
+    const { sUpdates, zUpdates } = drainPendingUpdates();
+    if (sUpdates.size === 0 && zUpdates.size === 0) return root;
+    const appliedPaths = new Set<string>();
+    const updatesByParent = buildUpdatesByParent(sUpdates);
+    return applyBatchUpdates(
+      root,
+      sUpdates,
+      zUpdates,
+      getAffectedPaths([sUpdates, zUpdates]),
+      true,
+      appliedPaths,
+      updatesByParent
+    );
+  };
 
   // --- Effects ---
 
@@ -264,6 +292,29 @@ export function useAppLogic() {
     refreshDrives();
   }, [refreshDrives]);
 
+  // P1: 磁盘可用空间定时刷新监控（默认 30s 轮询一次，避免界面展示过期的磁盘空间）
+  // Periodic refresh of disk free-space stats so the UI keeps free-space data fresh.
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    const tick = async () => {
+      refreshDrives();
+      const rootPath = dataRef.current?.path;
+      if (rootPath && rootPath !== "ALL_DISKS" && !rootPath.startsWith("PHYSICAL_DISK:")) {
+        try {
+          const s = await invoke<DiskStats | null>("get_disk_stats", { path: rootPath });
+          if (s) setDiskStats(s);
+        } catch (e) {
+          // 忽略单次刷新失败，等待下一轮轮询
+          console.error("Failed to refresh disk stats:", e);
+        }
+      }
+    };
+
+    const intervalId = setInterval(tick, 30000);
+    return () => clearInterval(intervalId);
+  }, [refreshDrives]);
+
   // --- Logic Functions ---
 
   useEffect(() => {
@@ -350,20 +401,8 @@ export function useAppLogic() {
       ]);
       setDiskStats(stats);
       
-      let updatedResult = result;
-      
-      const sUpdates = new Map(pendingStructureUpdates.current);
-      const zUpdates = new Map(pendingUpdates.current);
-      
-      pendingStructureUpdates.current.clear();
-      pendingUpdates.current.clear();
-      
-      if (sUpdates.size > 0 || zUpdates.size > 0) {
-        const affected = new Set<string>(); 
-        const appliedPaths = new Set<string>();
-        const updatesByParent = buildUpdatesByParent(sUpdates);
-        updatedResult = applyBatchUpdates(updatedResult, sUpdates, zUpdates, affected, true, appliedPaths, updatesByParent);
-      }
+      // 将后台扫描期间到达的待处理更新合并到初始结果
+      let updatedResult = applyPendingToFullTree(result);
       
       setData(sortTreeRecursive(updatedResult));
       setCurrentViewPath(updatedResult.path);
@@ -456,20 +495,7 @@ export function useAppLogic() {
 
       const result = await invoke<FileNode>("analyze_directory", { path: "ALL_DISKS" });
       
-      let updatedResult = result;
-      
-      const sUpdates = new Map(pendingStructureUpdates.current);
-      const zUpdates = new Map(pendingUpdates.current);
-      
-      pendingStructureUpdates.current.clear();
-      pendingUpdates.current.clear();
-      
-      if (sUpdates.size > 0 || zUpdates.size > 0) {
-        const affected = new Set<string>(); 
-        const appliedPaths = new Set<string>();
-        const updatesByParent = buildUpdatesByParent(sUpdates);
-        updatedResult = applyBatchUpdates(updatedResult, sUpdates, zUpdates, affected, true, appliedPaths, updatesByParent);
-      }
+      const updatedResult = applyPendingToFullTree(result);
       
       setData(sortTreeRecursive(updatedResult));
       setCurrentViewPath(updatedResult.path);
@@ -546,23 +572,16 @@ export function useAppLogic() {
             if (!prev) return null;
             
             let updatedNode = result;
-            
-            const sUpdates = new Map(pendingStructureUpdates.current);
-            const zUpdates = new Map(pendingUpdates.current);
-            
-            pendingStructureUpdates.current.clear();
-            pendingUpdates.current.clear();
-            
+
+            const { sUpdates, zUpdates } = drainPendingUpdates();
+
             if (sUpdates.size > 0 || zUpdates.size > 0) {
                  const appliedPaths = new Set<string>();
                  const updatesByParent = buildUpdatesByParent(sUpdates);
                  updatedNode = applyBatchUpdates(updatedNode, sUpdates, zUpdates, new Set(), true, appliedPaths, updatesByParent);
-                 
+
                  // Note: we still need to apply these updates to the REST of the tree!
-                 // But updatedNode is only the sub-tree. 
-                 // It's safer to let the normal scheduleUpdate handle the rest, 
-                 // but since we cleared the queues, we must apply them to the FULL tree!
-                 // So we should apply them to prev first, THEN update the node.
+                 // updatedNode is only the sub-tree, so also apply to the FULL tree (prev).
                  prev = applyBatchUpdates(prev, sUpdates, zUpdates, getAffectedPaths([sUpdates, zUpdates]), true, appliedPaths, updatesByParent);
             }
 
@@ -632,13 +651,9 @@ export function useAppLogic() {
         setData(prev => {
           if (!prev) return null;
           let updatedNode = result;
-          
-          const sUpdates = new Map(pendingStructureUpdates.current);
-          const zUpdates = new Map(pendingUpdates.current);
-          
-          pendingStructureUpdates.current.clear();
-          pendingUpdates.current.clear();
-          
+
+          const { sUpdates, zUpdates } = drainPendingUpdates();
+
           if (sUpdates.size > 0 || zUpdates.size > 0) {
                const appliedPaths = new Set<string>();
                const updatesByParent = buildUpdatesByParent(sUpdates);
@@ -741,7 +756,7 @@ export function useAppLogic() {
         }
         return;
       }
-      const size = getNodeMetricSize(node);
+      const size = getNodeMetricSize(node, sizeMetric);
       if (size === null) return;
       
       const parts = node.name.split('.');

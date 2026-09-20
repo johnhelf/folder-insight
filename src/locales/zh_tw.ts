@@ -165,4 +165,5 @@ export default {
   rateLater: '稍後再說',
   findDuplicatesDesc: '查找完全相同的重複檔案',
   smartAnalysis: '透過 AI 獲得清理建議',
+  rescanCurrent: 'Rescan Current Folder',
 };

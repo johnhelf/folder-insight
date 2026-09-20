@@ -55,6 +55,7 @@ function App() {
     handleSelectDrive,
     handleSelectFolder,
     handleRefresh,
+    refreshDrives,
     toggleExpand,
     handleContextMenu,
     handleGlobalContextMenu,
@@ -172,6 +173,7 @@ function App() {
         stopScan={stopScan}
         handleSelectDrive={handleSelectDrive}
         handleRefresh={handleRefresh}
+        refreshDrives={refreshDrives}
         handleSelectFolder={handleSelectFolder}
         view={view}
         setView={setView}
