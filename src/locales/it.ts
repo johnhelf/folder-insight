@@ -176,6 +176,8 @@ const it = {
   searchHintSizeLt: '- Size less than 10KB',
   searchHintExt: '- Extension filter',
   buyMeACoffee: 'Buy Me a Coffee',
+  aiEmptyResponse: 'L''IA ha restituito una risposta vuota o un formato non valido.',
+  configureApiKeyFirst: 'Configura prima la tua chiave API.',
 };
 
 export default it;

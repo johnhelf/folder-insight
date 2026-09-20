@@ -74,6 +74,14 @@ export function DuplicatesView({ t, targetDirs, onOpenInExplorer }: DuplicatesVi
         }
     };
 
+    const cancelScan = async () => {
+        try {
+            await invoke("cancel_find_duplicates");
+        } catch (err) {
+            console.error("Failed to cancel duplicate scan:", err);
+        }
+    };
+
     const totalWastedSpace = duplicates.reduce((acc, group) => acc + group.size * (group.files.length - 1), 0);
 
     return (
@@ -102,6 +110,15 @@ export function DuplicatesView({ t, targetDirs, onOpenInExplorer }: DuplicatesVi
                     {isScanning ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
                     {isScanning ? t('scanning') : t('findDuplicates')}
                 </button>
+
+                {isScanning && (
+                    <button
+                        onClick={cancelScan}
+                        className="mt-5 bg-gray-500 hover:bg-gray-600 text-white px-4 py-1.5 rounded-lg flex items-center gap-2 transition-colors text-sm font-medium"
+                    >
+                        {t('cancel')}
+                    </button>
+                )}
 
                 {!isScanning && duplicates.length > 0 && (
                     <div className="mt-5 ml-auto flex items-center gap-2 text-orange-600 dark:text-orange-400 font-medium">

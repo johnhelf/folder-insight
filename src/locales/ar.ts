@@ -176,6 +176,8 @@ const ar = {
   searchHintSizeLt: '- Size less than 10KB',
   searchHintExt: '- Extension filter',
   buyMeACoffee: 'Buy Me a Coffee',
+  aiEmptyResponse: 'أعاد الذكاء الاصطناعي استجابة فارغة أو تنسيقاً غير صالح.',
+  configureApiKeyFirst: 'يرجى تكوين مفتاح API أولاً.',
 };
 
 export default ar;

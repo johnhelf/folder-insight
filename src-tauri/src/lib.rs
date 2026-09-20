@@ -20,6 +20,7 @@ pub fn run() {
             let disk_locks = Arc::new(Mutex::new(HashMap::new()));
             let current_scan_cancel_token = Arc::new(Mutex::new(None));
             let ai_scan_cancel_token = Arc::new(Mutex::new(None));
+            let duplicate_scan_cancel_token = Arc::new(Mutex::new(None));
             
             app.manage(AppState {
                 size_cache,
@@ -28,6 +29,7 @@ pub fn run() {
                 disk_locks,
                 current_scan_cancel_token,
                 ai_scan_cancel_token,
+                duplicate_scan_cancel_token,
             });
             Ok(())
         })
@@ -43,6 +45,7 @@ pub fn run() {
             commands::disks::get_physical_disks,
             commands::disks::get_disk_stats,
             commands::duplicates::find_duplicates,
+            commands::duplicates::cancel_find_duplicates,
             commands::large::get_large_items_report,
             commands::ai::get_ai_insights,
             commands::ai::preview_ai_prompt,

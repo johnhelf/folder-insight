@@ -49,6 +49,12 @@ pub async fn search_files(
             ext_filter = Some(query[4..].to_lowercase());
         } else {
             // Treat as regex, case insensitive
+            // 限制正则长度，防止超长输入导致的性能/内存问题（尽力而为防护）
+            if query.len() > 512 {
+                return Err::<Vec<SearchResult>, String>(
+                    format!("Query regex too long (max 512 chars, got {})", query.len()),
+                );
+            }
             match Regex::new(&format!("(?i){}", query)) {
                 Ok(re) => name_regex = Some(re),
                 Err(_) => return Err::<Vec<SearchResult>, String>("Invalid regex".to_string()),

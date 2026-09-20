@@ -177,4 +177,6 @@ export default {
   searchHintSizeLt: '- Size less than 10KB',
   searchHintExt: '- Extension filter',
   buyMeACoffee: 'Buy Me a Coffee',
+  aiEmptyResponse: 'AI 回傳了空的回應或格式無效。',
+  configureApiKeyFirst: '請先設定你的 API Key。',
 };

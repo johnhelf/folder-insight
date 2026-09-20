@@ -179,4 +179,6 @@ export default {
   searchHintSizeLt: '- Size less than 10KB',
   searchHintExt: '- Extension filter',
   buyMeACoffee: 'Buy Me a Coffee',
+  aiEmptyResponse: 'AI가 빈 응답 또는 잘못된 형식을 반환했습니다.',
+  configureApiKeyFirst: '먼저 API 키를 구성하십시오.',
 };

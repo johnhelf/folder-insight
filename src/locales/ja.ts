@@ -176,6 +176,8 @@ const ja = {
   searchHintSizeLt: '- Size less than 10KB',
   searchHintExt: '- Extension filter',
   buyMeACoffee: 'Buy Me a Coffee',
+  aiEmptyResponse: 'AIが空の応答または無効な形式を返しました。',
+  configureApiKeyFirst: '先にAPIキーを設定してください。',
 };
 
 export default ja;

@@ -47,6 +47,8 @@ const en = {
   aiRawData: 'AI Raw Communication',
   aiPrompt: 'Prompt (Request)',
   aiResponse: 'Response',
+  aiEmptyResponse: 'AI returned an empty response or invalid format.',
+  configureApiKeyFirst: 'Please configure your API Key first.',
 
   appTitle: 'Folder Insight',
   subtitle: 'Visualize your disk space usage',

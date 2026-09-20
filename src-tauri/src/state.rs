@@ -18,4 +18,6 @@ pub struct AppState {
     pub current_scan_cancel_token: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
     /// AI分析扫描的取消令牌
     pub ai_scan_cancel_token: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
+    /// 重复文件查找的取消令牌
+    pub duplicate_scan_cancel_token: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
 }

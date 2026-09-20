@@ -180,6 +180,8 @@ export function useAppLogic() {
   }, [scheduleUpdate]);
 
   // 弹窗自动弹出逻辑 (赞助 & 评分)
+  // 赞助与评分相互解耦：各自独立节流，互不卡顿。
+  // 评分改为「记录最近提示时间，间隔足够长后再弹」，对所有启动生效。
   useEffect(() => {
     if (!isTauri()) return;
     if (hasCheckedModalRef.current) return;
@@ -188,44 +190,33 @@ export function useAppLogic() {
     const now = Date.now();
     const FIRST_RUN_TIME_KEY = 'first_run_time';
     const HAS_SHOWN_SPONSOR_KEY = 'has_shown_sponsor_modal';
-    const HAS_SHOWN_RATE_KEY = 'has_shown_rate_modal';
-    const LAST_MODAL_SHOW_TIME_KEY = 'last_modal_show_time';
-    
+    const LAST_RATE_PROMPT_TIME_KEY = 'last_rate_prompt_time';
+    const FIRST_RUN_DELAY = 3 * 24 * 60 * 60 * 1000; // 首次使用满 3 天后才提示
+    const RATE_INTERVAL = 3 * 24 * 60 * 60 * 1000;   // 评分再次提示的最小间隔
+
     let firstRunTime = parseInt(localStorage.getItem(FIRST_RUN_TIME_KEY) || '0', 10);
     if (firstRunTime === 0) {
       firstRunTime = now;
       localStorage.setItem(FIRST_RUN_TIME_KEY, now.toString());
     }
 
-    if (now - firstRunTime < 3 * 24 * 60 * 60 * 1000) {
-      return;
+    // 赞助：首次使用满 3 天后提示一次（本会话未展示过）
+    if (now - firstRunTime >= FIRST_RUN_DELAY) {
+      if (localStorage.getItem(HAS_SHOWN_SPONSOR_KEY) !== 'true' && !isSponsorModalOpen) {
+        setIsSponsorModalOpen(true);
+        localStorage.setItem(HAS_SHOWN_SPONSOR_KEY, 'true');
+      }
     }
 
-    let hasShownSponsor = localStorage.getItem(HAS_SHOWN_SPONSOR_KEY) === 'true';
-    let hasShownRate = localStorage.getItem(HAS_SHOWN_RATE_KEY) === 'true';
-
-    if (hasShownSponsor && hasShownRate) {
-      hasShownSponsor = false;
-      hasShownRate = false;
-      localStorage.setItem(HAS_SHOWN_SPONSOR_KEY, 'false');
-      localStorage.setItem(HAS_SHOWN_RATE_KEY, 'false');
-    }
-
-    if (isSponsorModalOpen || isRateModalOpen) {
-      return;
-    }
-    
-    if (!hasShownSponsor) {
-      setIsSponsorModalOpen(true);
-      localStorage.setItem(HAS_SHOWN_SPONSOR_KEY, 'true');
-      localStorage.setItem(LAST_MODAL_SHOW_TIME_KEY, now.toString());
-    } else if (!hasShownRate) {
-      if (isWindows()) {
+    // 评分：仅 Windows 渠道展示。首次需满首次延迟，后续每次间隔 >= RATE_INTERVAL 才再弹。
+    if (isWindows()) {
+      const lastRatePrompt = parseInt(localStorage.getItem(LAST_RATE_PROMPT_TIME_KEY) || '0', 10);
+      const isEligible = lastRatePrompt === 0
+        ? now - firstRunTime >= FIRST_RUN_DELAY        // 首次
+        : now - lastRatePrompt >= RATE_INTERVAL;        // 后续
+      if (isEligible && !isRateModalOpen) {
         setIsRateModalOpen(true);
-        localStorage.setItem(HAS_SHOWN_RATE_KEY, 'true');
-        localStorage.setItem(LAST_MODAL_SHOW_TIME_KEY, now.toString());
-      } else {
-        localStorage.setItem(HAS_SHOWN_RATE_KEY, 'true');
+        localStorage.setItem(LAST_RATE_PROMPT_TIME_KEY, now.toString());
       }
     }
   }, []);

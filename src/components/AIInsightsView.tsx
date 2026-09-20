@@ -23,6 +23,19 @@ interface AIReportResult {
   action: string;
 }
 
+/**
+ * 对可能来自 LLM / 路径的文本做 HTML 转义，防止脚本注入。
+ * 转义 & < > " ' 为对应实体。
+ */
+function escapeHtml(value: string): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 interface AIInsightsViewProps {
   rootPaths: string[];
   t: (key: string, params?: Record<string, string | number>) => string;
@@ -99,7 +112,7 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
     }
 
     if (!apiKey) {
-      setError('Please configure your API Key first.');
+      setError(t('configureApiKeyFirst'));
       setShowSettings(true);
       return;
     }
@@ -182,7 +195,7 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
       });
       
       if (!response.results || response.results.length === 0) {
-        throw new Error('AI returned an empty response or invalid format.');
+        throw new Error(t('aiEmptyResponse'));
       }
       
       setInsights(response.results);
@@ -218,7 +231,7 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
     setShowDisclaimer(false);
     // Proceed with analysis check after accepting
     if (!apiKey) {
-      setError('Please configure your API Key first.');
+      setError(t('configureApiKeyFirst'));
       setShowSettings(true);
     } else {
       handleStartAnalysis();
@@ -264,15 +277,17 @@ export const AIInsightsView: React.FC<AIInsightsViewProps> = ({ rootPaths, onOpe
         <strong>⚠️ ${t('aiResultDisclaimer')}</strong>
     </div>
     ${insights.map(i => {
-      const translatedAction = getTranslatedAction(i.action);
+      const translatedAction = escapeHtml(getTranslatedAction(i.action));
+      const pathHtml = escapeHtml(i.path);
+      const reasonHtml = escapeHtml(i.reason);
       return `
     <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem;">
             <div style="flex: 1;">
-                <div class="path">${i.path}</div>
+                <div class="path">${pathHtml}</div>
                 <div class="reason">
                     <strong>${reasonText}:</strong><br/>
-                    ${i.reason}
+                    ${reasonHtml}
                 </div>
             </div>
             <div class="action-badge">${translatedAction}</div>

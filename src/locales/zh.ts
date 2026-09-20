@@ -47,6 +47,8 @@ const zh = {
   aiRawData: 'AI 原始通信数据',
   aiPrompt: '提示词 (请求)',
   aiResponse: '返回结果',
+  aiEmptyResponse: 'AI 返回了空响应或格式无效。',
+  configureApiKeyFirst: '请先配置你的 API Key。',
 
   appTitle: '文件夹洞察',
   subtitle: '可视化您的磁盘空间',

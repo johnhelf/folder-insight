@@ -179,4 +179,6 @@ export default {
   searchHintSizeLt: '- Size less than 10KB',
   searchHintExt: '- Extension filter',
   buyMeACoffee: 'Buy Me a Coffee',
+  aiEmptyResponse: 'L''IA a renvoyé une réponse vide ou un format invalide.',
+  configureApiKeyFirst: 'Veuillez d''abord configurer votre clé API.',
 };
