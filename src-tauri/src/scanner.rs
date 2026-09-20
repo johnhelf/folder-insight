@@ -13,7 +13,15 @@ use crate::utils::{emit_batch_structure_updates, emit_batch_updates, get_allocat
 
 // MAX_INITIAL_DEPTH determines how deep the synchronous scan goes before returning to UI
 // 降低初始同步扫描深度，避免前端长时间黑屏等待，改为由后台异步任务继续扫描
-pub const MAX_INITIAL_DEPTH: usize = 2;
+//
+// C1：适度加深结构推送层数（2 → 3），使用户能更快看到深层目录，减少点开的二次往返；
+// 同时以 MAX_STRUCTURE_PUSH 作为推送节点上限，防止海量节点导致前端 OOM。
+pub const MAX_INITIAL_DEPTH: usize = 3;
+
+/// C1：后台扫描累计推送的结构节点数上限。
+/// 超过后停止继续收集结构更新（大小/进度更新照常），
+/// 未推送的深层目录仍由前端点开时按需 expand_directory 拉取。
+pub const MAX_STRUCTURE_PUSH: usize = 20000;
 
 /// 扫描并返回结构更新，但不发送
 pub fn scan_directory_structure(path: &Path, root_path: &Path) -> Option<StructureUpdate> {
@@ -88,6 +96,9 @@ pub fn run_background_scan(
     let mut scanned_allocated_size = 0u64;
     let mut last_progress_emit = Instant::now();
     let mut seen_hardlinks: HashSet<u64> = HashSet::new();
+    // C1：累计已推送的结构节点数，达到上限后停止收集结构更新（避免 OOM）
+    let mut structure_nodes_pushed: usize = 0;
+    let mut structure_capped = false;
 
     // Try to determine total size for progress reporting
     let mut total_size = total_size_override;
@@ -274,8 +285,13 @@ pub fn run_background_scan(
             // We need to scan and emit structure for depth >= 1 to populate depth 2 and deeper.
             // 修复：限制结构更新的深度，避免发送几百万个节点导致前端卡死和 OOM
             // 仅对浅层目录发送结构更新，深层目录在用户手动展开时由前端请求
-            if entry.depth() <= MAX_INITIAL_DEPTH {
+            if entry.depth() <= MAX_INITIAL_DEPTH && !structure_capped {
                  if let Some(update) = scan_directory_structure(path, &root_path_buf) {
+                    // C1：取得结构后累加节点数，超限则停止推送（防止深层海量节点导致前端 OOM）
+                    structure_nodes_pushed += update.children.len() + 1;
+                    if structure_nodes_pushed >= MAX_STRUCTURE_PUSH {
+                        structure_capped = true;
+                    }
                     pending_structures.push(update);
                  }
             }
